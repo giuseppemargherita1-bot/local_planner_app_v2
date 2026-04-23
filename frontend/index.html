@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Local Planner App V2 - Planner</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand-block">
+        <h1>Local Planner App V2</h1>
+      </div>
+
+      <div class="topbar-actions">
+        <button class="btn btn-light">Planner</button>
+        <button class="btn btn-light">Gantt</button>
+        <button class="btn btn-light">Risorse</button>
+        <button class="btn btn-light">Progetti</button>
+        <button class="btn btn-primary">Aggiorna</button>
+      </div>
+    </header>
+
+    <main class="planner-layout">
+      <section class="planner-main card">
+        <div class="planner-inlinebar">
+          <div class="planner-inlinebar-left">
+            <strong class="planner-label">Planner</strong>
+
+            <label class="inline-field">
+              <span>Commessa</span>
+              <select>
+                <option>Tutte le commesse</option>
+              </select>
+            </label>
+
+            <label class="inline-field">
+              <span>Mansione</span>
+              <select>
+                <option>Tutte le mansioni</option>
+              </select>
+            </label>
+
+            <label class="inline-check">
+              <input type="checkbox" />
+              <span>Mostra senza fabbisogno</span>
+            </label>
+          </div>
+
+          <div class="planner-inlinebar-right">
+            <button class="btn btn-light">Stampa</button>
+            <button class="btn btn-light">Importa</button>
+          </div>
+        </div>
+
+        <div class="planner-grid-wrap" id="plannerGridWrap">
+          <table class="planner-matrix">
+            <thead>
+              <tr class="subtotal-row">
+                <th class="sticky-col sticky-head">Subtotali</th>
+                <th class="sticky-col second sticky-head">Vista filtrata</th>
+                <th class="sticky-col third sticky-head">Settimana</th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+                <th class="week-head"></th><th class="week-head"></th><th class="week-head"></th>
+              </tr>
+              <tr>
+                <th class="sticky-col sticky-head second-line">Commessa</th>
+                <th class="sticky-col second sticky-head second-line">Mansione</th>
+                <th class="sticky-col third sticky-head second-line">Copertura</th>
+                <th class="week-head second-line">W01</th><th class="week-head second-line">W02</th><th class="week-head second-line">W03</th><th class="week-head second-line">W04</th>
+                <th class="week-head second-line">W05</th><th class="week-head second-line">W06</th><th class="week-head second-line">W07</th><th class="week-head second-line">W08</th>
+                <th class="week-head second-line">W09</th><th class="week-head second-line">W10</th><th class="week-head second-line">W11</th><th class="week-head second-line">W12</th>
+                <th class="week-head second-line">W13</th><th class="week-head second-line">W14</th><th class="week-head second-line">W15</th><th class="week-head second-line">W16</th>
+                <th class="week-head second-line current-week">W17</th><th class="week-head second-line">W18</th><th class="week-head second-line">W19</th><th class="week-head second-line">W20</th>
+                <th class="week-head second-line">W21</th><th class="week-head second-line">W22</th><th class="week-head second-line">W23</th><th class="week-head second-line">W24</th>
+                <th class="week-head second-line">W25</th><th class="week-head second-line">W26</th><th class="week-head second-line">W27</th><th class="week-head second-line">W28</th>
+                <th class="week-head second-line">W29</th><th class="week-head second-line">W30</th><th class="week-head second-line">W31</th><th class="week-head second-line">W32</th>
+                <th class="week-head second-line">W33</th><th class="week-head second-line">W34</th><th class="week-head second-line">W35</th><th class="week-head second-line">W36</th>
+                <th class="week-head second-line">W37</th><th class="week-head second-line">W38</th><th class="week-head second-line">W39</th><th class="week-head second-line">W40</th>
+                <th class="week-head second-line">W41</th><th class="week-head second-line">W42</th><th class="week-head second-line">W43</th>
+              </tr>
+            </thead>
+            <tbody id="plannerBody">
+              <tr>
+                <td class="sticky-col">Commessa Alfa</td>
+                <td class="sticky-col second">TUBISTA</td>
+                <td class="sticky-col third coverage good">0/2<br><small>100%</small></td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-demand current-col">R2<br>A1<br>D1</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+              </tr>
+              <tr>
+                <td class="sticky-col">Commessa Beta</td>
+                <td class="sticky-col second">CARPENTIERE</td>
+                <td class="sticky-col third coverage good">0/1<br><small>100%</small></td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-ok">R1<br>A1<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+                <td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td><td class="cell-empty">R0<br>A0<br>D0</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="splitter splitter-vertical" id="verticalSplitter"></div>
+
+      <aside class="planner-side card">
+        <div class="side-top" id="sideTop">
+          <div class="side-title">Assegnazione Rapida</div>
+          <div class="selection-box">Commessa Alfa | TUBISTA | W18</div>
+
+          <div class="form-grid compact">
+            <label><span>Richiesto</span><input type="number" value="2" /></label>
+            <label><span>Applica da</span><input type="number" value="18" /></label>
+            <label><span>Applica a</span><input type="number" value="18" /></label>
+          </div>
+
+          <div class="side-actions">
+            <button class="btn btn-primary">Salva fabbisogno</button>
+          </div>
+
+          <div class="form-grid compact">
+            <label><span>Commessa</span><input type="text" value="Commessa Alfa" /></label>
+            <label><span>Mansione</span><input type="text" value="TUBISTA" /></label>
+            <label><span>Week da</span><input type="number" value="18" /></label>
+            <label><span>Week a</span><input type="number" value="18" /></label>
+          </div>
+
+          <label class="checkbox-inline side-check">
+            <input type="checkbox" />
+            <span>Usa risorse EXT</span>
+          </label>
+
+          <label class="field-block">
+            <span>Quantità EXT</span>
+            <input type="number" value="1" />
+          </label>
+
+          <div class="side-actions">
+            <button class="btn btn-primary">Assegna periodo</button>
+            <button class="btn btn-light">Segna INDISP</button>
+          </div>
+        </div>
+
+        <div class="side-inner-splitter" id="sideInnerSplitter"></div>
+
+        <div class="side-bottom">
+          <div class="side-title">Risorse</div>
+          <div class="resource-list">
+            <div class="resource-item">MARIO ROSSI | TUBISTA | DISPONIBILE DA W18</div>
+            <div class="resource-item">Luigi Bianchi | CARPENTIERE | Disponibile subito</div>
+            <div class="resource-item">Anna Verdi | SALDATORE | Disponibile da W20</div>
+            <div class="resource-item">Paolo Neri | TUBISTA | Disponibile</div>
+            <div class="resource-item">Marco Blu | TUBISTA | Disponibile</div>
+            <div class="resource-item">Andrea Sala | SALDATORE | Disponibile</div>
+          </div>
+        </div>
+      </aside>
+
+      <div class="splitter splitter-horizontal" id="horizontalSplitter"></div>
+
+      <section class="planner-bottom card">
+        <div class="side-title side-title-bottom">Dettaglio allocazioni / note</div>
+        <div class="bottom-content">
+          Seleziona una cella o una risorsa per vedere qui dettaglio, storico e note operative.
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
