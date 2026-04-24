@@ -13,6 +13,16 @@ def get_connection():
     return conn
 
 
+def ensure_column(conn, table_name, column_name, column_definition):
+    columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    existing = {column["name"] for column in columns}
+
+    if column_name not in existing:
+        conn.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+        )
+
+
 def init_db():
     conn = get_connection()
     try:
@@ -71,6 +81,21 @@ def init_db():
             );
             """
         )
+
+        ensure_column(conn, "allocations", "role", "TEXT NOT NULL DEFAULT ''")
+
+        conn.execute(
+            """
+            UPDATE allocations
+            SET role = (
+                SELECT UPPER(resources.role)
+                FROM resources
+                WHERE resources.id = allocations.resource_id
+            )
+            WHERE role = ''
+            """
+        )
+
         conn.commit()
     finally:
         conn.close()

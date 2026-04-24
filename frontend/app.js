@@ -166,6 +166,16 @@ function scrollToCurrentWeek() {
   plannerGridWrap.scrollLeft = Math.max(0, current.offsetLeft - leftStickyWidth - 20);
 }
 
+function roundOneDecimal(value) {
+  return Math.round(value * 10) / 10;
+}
+
+function formatNumber(value) {
+  const rounded = roundOneDecimal(Number(value || 0));
+  if (Number.isInteger(rounded)) return String(rounded);
+  return String(rounded).replace(".", ",");
+}
+
 function buildDemandMap(demands) {
   const map = new Map();
   for (const demand of demands) {
@@ -176,6 +186,32 @@ function buildDemandMap(demands) {
   return map;
 }
 
+function parseHiringStartWeekFromNote(note) {
+  const text = String(note || "").toUpperCase();
+  const match = text.match(/ASSUNZIONE\s+DA\s+W?\s*(\d{1,2})/);
+  if (!match) return null;
+  return Number(match[1]);
+}
+
+function isExplicitlyUnavailable(resource) {
+  const text = String(resource.availability_note || "").toUpperCase();
+  return (
+    text.includes("INDISP") ||
+    text.includes("INDISPONIBILE") ||
+    text.includes("NON DISPONIBILE")
+  );
+}
+
+function isResourceAvailableForWeek(resource, week) {
+  if (!resource.is_active) return false;
+  if (isExplicitlyUnavailable(resource)) return false;
+
+  const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
+  if (startWeek !== null && week < startWeek) return false;
+
+  return true;
+}
+
 function buildAllocationMap(allocations, resources) {
   const resourceById = new Map(resources.map((r) => [r.id, r]));
   const map = new Map();
@@ -184,12 +220,12 @@ function buildAllocationMap(allocations, resources) {
     const resource = resourceById.get(allocation.resource_id);
     if (!resource || !resource.is_active) continue;
 
-    const note = String(resource.availability_note || "").toLowerCase();
-    if (note.includes("indisp") || note.includes("indispon")) continue;
+    if (!isResourceAvailableForWeek(resource, Number(allocation.week))) continue;
 
-    const role = String(resource.role || "").trim().toUpperCase();
+    const role = String(allocation.role || resource.role || "").trim().toUpperCase();
     const key = `${allocation.project_id}__${role}__${allocation.week}`;
-    map.set(key, (map.get(key) || 0) + 1);
+    const value = Number(allocation.load_percent || 0) / 100;
+    map.set(key, (map.get(key) || 0) + value);
   }
 
   return map;
@@ -321,9 +357,9 @@ function updateSidePanelFromSelection() {
   detailWeekFrom.value = summary.week_from;
   detailWeekTo.value = summary.week_to;
   detailRange.value = getWeekRangeLabel(summary.week_from, summary.week_to);
-  detailRequired.value = summary.required;
-  detailAllocated.value = summary.allocated;
-  detailDiff.value = summary.required - summary.allocated;
+  detailRequired.value = formatNumber(summary.required);
+  detailAllocated.value = formatNumber(summary.allocated);
+  detailDiff.value = formatNumber(summary.required - summary.allocated);
 
   renderResourceLists();
 }
@@ -421,25 +457,52 @@ function moveFocusToGrid() {
   if (plannerGridWrap) plannerGridWrap.focus();
 }
 
-function getAssignedResourcesForSelection() {
+function getSelectedWeeksSet() {
   const summary = getSelectionSummary();
-  if (!summary) return [];
-
   const selectedWeeks = new Set();
+
+  if (!summary) return selectedWeeks;
+
   for (let w = summary.week_from; w <= summary.week_to; w += 1) {
     selectedWeeks.add(w);
   }
 
-  return resourcesData.filter((resource) => {
-    if (!resource.is_active) return false;
+  return selectedWeeks;
+}
 
-    const note = String(resource.availability_note || "").toLowerCase();
-    if (note.includes("indisp") || note.includes("indispon")) return false;
+function getResourceAllocationsForSelectedWeeks(resourceId) {
+  const selectedWeeks = getSelectedWeeksSet();
+
+  return allocationsData.filter((allocation) => {
+    return (
+      allocation.resource_id === resourceId &&
+      selectedWeeks.has(Number(allocation.week))
+    );
+  });
+}
+
+function getResourceAllocationsForWeek(resourceId, week) {
+  return allocationsData.filter((allocation) => {
+    return allocation.resource_id === resourceId && Number(allocation.week) === Number(week);
+  });
+}
+
+function getAssignedResourcesForSelection() {
+  const summary = getSelectionSummary();
+  if (!summary) return [];
+
+  const selectedWeeks = getSelectedWeeksSet();
+
+  return resourcesData.filter((resource) => {
+    if (!isResourceAvailableForWeek(resource, summary.week_from)) return false;
 
     return allocationsData.some((allocation) => {
+      const allocationRole = String(allocation.role || "").trim().toUpperCase();
+
       return (
         allocation.resource_id === resource.id &&
         allocation.project_id === summary.project_id &&
+        allocationRole === summary.role &&
         selectedWeeks.has(Number(allocation.week))
       );
     });
@@ -447,13 +510,20 @@ function getAssignedResourcesForSelection() {
 }
 
 function getResourceStatus(resource) {
+  const summary = getSelectionSummary();
+  if (!summary) return "free";
+
   if (!resource.is_active) {
     return "inactive";
   }
 
-  const note = String(resource.availability_note || "").toLowerCase();
-  if (note.includes("indisp") || note.includes("indispon")) {
+  if (isExplicitlyUnavailable(resource)) {
     return "unavailable";
+  }
+
+  const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
+  if (startWeek !== null && summary.week_from < startWeek) {
+    return "future";
   }
 
   const assigned = getAssignedResourcesForSelection().some((r) => r.id === resource.id);
@@ -461,7 +531,75 @@ function getResourceStatus(resource) {
     return "allocated";
   }
 
+  const allocations = getResourceAllocationsForSelectedWeeks(resource.id);
+  const maxPerWeek = new Map();
+
+  allocations.forEach((allocation) => {
+    const week = Number(allocation.week);
+    maxPerWeek.set(week, (maxPerWeek.get(week) || 0) + 1);
+  });
+
+  const values = Array.from(maxPerWeek.values());
+
+  if (values.some((count) => count >= 2)) {
+    return "saturated";
+  }
+
+  if (values.some((count) => count === 1)) {
+    return "partial";
+  }
+
   return "free";
+}
+
+function allocationShortLabel(allocation) {
+  const project = allocation.project_name || `Progetto ${allocation.project_id}`;
+  const role = allocation.role || "-";
+  const load = Number(allocation.load_percent || 0);
+  return `${project} ${role} W${String(allocation.week).padStart(2, "0")} ${load}%`;
+}
+
+function getAllocationLocationText(resource) {
+  const allocations = getResourceAllocationsForSelectedWeeks(resource.id);
+  if (!allocations.length) return "";
+  return allocations.map(allocationShortLabel).join(" / ");
+}
+
+function getResourceShortInfo(resource, status) {
+  if (status === "inactive") return "CESSATO";
+  if (status === "unavailable") return "INDISP";
+  if (status === "future") {
+    const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
+    return `ASSUNZIONE W${String(startWeek).padStart(2, "0")}`;
+  }
+
+  if (status === "allocated") {
+    const where = getAllocationLocationText(resource);
+    return where ? `ASSEGNATO: ${where}` : "ASSEGNATO";
+  }
+
+  if (status === "partial") {
+    const where = getAllocationLocationText(resource);
+    return where ? `PARZIALE: ${where}` : "PARZIALE";
+  }
+
+  if (status === "saturated") {
+    const where = getAllocationLocationText(resource);
+    return where ? `SATURO: ${where}` : "SATURO";
+  }
+
+  return "";
+}
+
+function getResourceTooltip(resource, status) {
+  if (status === "future") {
+    const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
+    return `Assunzione da W${String(startWeek).padStart(2, "0")}`;
+  }
+
+  if (status !== "partial" && status !== "saturated" && status !== "allocated") return "";
+
+  return getAllocationLocationText(resource);
 }
 
 function matchesResourceSearch(resource, search) {
@@ -476,11 +614,22 @@ function renderResourceItem(resource, status) {
   if (status === "allocated") classes.push("resource-allocated");
   if (status === "free") classes.push("resource-free");
   if (status === "unavailable") classes.push("resource-unavailable");
+  if (status === "future") classes.push("resource-unavailable");
   if (status === "inactive") classes.push("resource-inactive");
+  if (status === "partial") classes.push("resource-partial");
+  if (status === "saturated") classes.push("resource-allocated");
+
+  const tooltip = getResourceTooltip(resource, status);
+  const extra = getResourceShortInfo(resource, status);
 
   return `
-    <div class="${classes.join(" ")}" data-resource-id="${resource.id}">
-      ${resource.name} | ${resource.role || "-"}${resource.availability_note ? ` | ${resource.availability_note}` : ""}
+    <div
+      class="${classes.join(" ")}"
+      data-resource-id="${resource.id}"
+      data-resource-status="${status}"
+      title="${tooltip}"
+    >
+      ${resource.name} | ${resource.role || "-"}${extra ? ` | ${extra}` : ""}
     </div>
   `;
 }
@@ -520,6 +669,189 @@ function renderResourceLists() {
         .map((resource) => renderResourceItem(resource, getResourceStatus(resource)))
         .join("")
     : `<div class="resource-item resource-unavailable">Nessuna risorsa disponibile</div>`;
+
+  assignedResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
+    item.addEventListener("dblclick", async () => {
+      const resourceId = Number(item.dataset.resourceId);
+      await removeResourceFromSelection(resourceId);
+    });
+  });
+
+  availableResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
+    item.addEventListener("dblclick", async () => {
+      const status = item.dataset.resourceStatus;
+      if (status === "inactive" || status === "unavailable" || status === "future") return;
+
+      const resourceId = Number(item.dataset.resourceId);
+      await handleAvailableResourceDoubleClick(resourceId);
+    });
+  });
+}
+
+function showConflictDialog(title, bodyHtml, actions) {
+  closeConflictDialog();
+
+  const overlay = document.createElement("div");
+  overlay.className = "conflict-overlay";
+  overlay.id = "conflictOverlay";
+
+  const dialog = document.createElement("div");
+  dialog.className = "conflict-dialog";
+
+  const actionButtons = actions.map((action, index) => {
+    return `<button class="btn ${action.primary ? "btn-primary" : "btn-light"}" data-action-index="${index}" type="button">${action.label}</button>`;
+  }).join("");
+
+  dialog.innerHTML = `
+    <div class="conflict-title">${title}</div>
+    <div class="conflict-body">${bodyHtml}</div>
+    <div class="conflict-actions">${actionButtons}</div>
+  `;
+
+  overlay.appendChild(dialog);
+  document.body.appendChild(overlay);
+
+  dialog.querySelectorAll("[data-action-index]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const index = Number(button.dataset.actionIndex);
+      const action = actions[index];
+      closeConflictDialog();
+      await action.handler();
+    });
+  });
+}
+
+function closeConflictDialog() {
+  const existing = document.getElementById("conflictOverlay");
+  if (existing) existing.remove();
+}
+
+function allocationLabel(allocation) {
+  return allocationShortLabel(allocation);
+}
+
+async function handleAvailableResourceDoubleClick(resourceId) {
+  const summary = getSelectionSummary();
+  if (!summary) return;
+
+  const resource = resourcesData.find((item) => item.id === resourceId);
+  if (!resource) return;
+
+  if (summary.week_from !== summary.week_to) {
+    const conflicts = getResourceAllocationsForSelectedWeeks(resourceId);
+    if (conflicts.length > 0) {
+      showConflictDialog(
+        "Conflitto su più settimane",
+        "La risorsa è già allocata in almeno una delle settimane selezionate.<br>Gestisci una settimana alla volta.",
+        [
+          {
+            label: "OK",
+            primary: true,
+            handler: async () => {},
+          },
+        ],
+      );
+      return;
+    }
+
+    await assignResourceToSelection(resourceId);
+    return;
+  }
+
+  const week = summary.week_from;
+  const existing = getResourceAllocationsForWeek(resourceId, week);
+
+  if (existing.length === 0) {
+    await resolveAllocationConflict(resourceId, "direct");
+    return;
+  }
+
+  if (existing.length === 1) {
+    const old = existing[0];
+
+    showConflictDialog(
+      "Risorsa già allocata",
+      `
+        <p><strong>${resource.name}</strong> è già allocato su:</p>
+        <p>${allocationLabel(old)}</p>
+        <p>Cosa vuoi fare?</p>
+      `,
+      [
+        {
+          label: "Annulla",
+          handler: async () => {},
+        },
+        {
+          label: "Sostituisci",
+          primary: true,
+          handler: async () => {
+            await resolveAllocationConflict(resourceId, "replace_all");
+          },
+        },
+        {
+          label: "Forza 50/50",
+          handler: async () => {
+            await resolveAllocationConflict(resourceId, "split_50");
+          },
+        },
+      ],
+    );
+
+    return;
+  }
+
+  const body = `
+    <p><strong>${resource.name}</strong> è già allocato su 2 commesse:</p>
+    ${existing.map((item) => `<p>${allocationLabel(item)}</p>`).join("")}
+    <p>Scegli cosa tenere.</p>
+  `;
+
+  const actions = [
+    {
+      label: "Annulla",
+      handler: async () => {},
+    },
+    ...existing.map((item) => ({
+      label: `Togli ${item.project_name}`,
+      handler: async () => {
+        await resolveAllocationConflict(resourceId, "replace_one", item.id);
+      },
+    })),
+    {
+      label: "Togli entrambe e assegna 100%",
+      primary: true,
+      handler: async () => {
+        await resolveAllocationConflict(resourceId, "replace_all");
+      },
+    },
+  ];
+
+  showConflictDialog("Risorsa satura", body, actions);
+}
+
+async function resolveAllocationConflict(resourceId, mode, removeAllocationId = null) {
+  const summary = getSelectionSummary();
+  if (!summary) return;
+
+  await fetchJson("/api/allocations/resolve-conflict", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      resource_id: resourceId,
+      project_id: summary.project_id,
+      role: summary.role,
+      week: summary.week_from,
+      mode,
+      remove_allocation_id: removeAllocationId,
+      hours: 40,
+      note: "Risoluzione conflitto da planner V2",
+    }),
+  });
+
+  await loadAndRenderPlanner();
+  setMode("resources");
 }
 
 function handleGridKeydown(event) {
@@ -596,7 +928,7 @@ async function saveDemandRange() {
     role: summary.role,
     week_from: Number(detailWeekFrom.value),
     week_to: Number(detailWeekTo.value),
-    quantity: Number(detailRequired.value),
+    quantity: Number(String(detailRequired.value).replace(",", ".")),
     note: "",
   };
 
@@ -610,6 +942,56 @@ async function saveDemandRange() {
 
   await loadAndRenderPlanner();
   moveFocusToGrid();
+}
+
+async function assignResourceToSelection(resourceId) {
+  const summary = getSelectionSummary();
+  if (!summary) return;
+
+  await fetchJson("/api/allocations/assign-range", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      resource_id: resourceId,
+      project_id: summary.project_id,
+      role: summary.role,
+      week_from: summary.week_from,
+      week_to: summary.week_to,
+      hours: 40,
+      load_percent: 100,
+      note: "Assegnazione da planner V2",
+    }),
+  });
+
+  await loadAndRenderPlanner();
+  setMode("resources");
+}
+
+async function removeResourceFromSelection(resourceId) {
+  const summary = getSelectionSummary();
+  if (!summary) return;
+
+  await fetchJson("/api/allocations/remove-range", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      resource_id: resourceId,
+      project_id: summary.project_id,
+      role: summary.role,
+      week_from: summary.week_from,
+      week_to: summary.week_to,
+      hours: 40,
+      load_percent: 100,
+      note: "Rimozione da planner V2",
+    }),
+  });
+
+  await loadAndRenderPlanner();
+  setMode("resources");
 }
 
 function renderPlanner() {
@@ -670,9 +1052,9 @@ function renderPlanner() {
           data-week="${week}"
           title="${historyTitle}"
         >
-          R${required}<br>
-          A${allocated}<br>
-          D${diff}${hasHistory ? `<span class="history-marker">↺</span>` : ""}
+          R${formatNumber(required)}<br>
+          A${formatNumber(allocated)}<br>
+          D${formatNumber(diff)}${hasHistory ? `<span class="history-marker">↺</span>` : ""}
         </td>
       `;
     }).join("");
@@ -687,7 +1069,7 @@ function renderPlanner() {
         <td class="sticky-col">${row.project_name}</td>
         <td class="sticky-col second">${row.role}</td>
         <td class="sticky-col third ${coverageClass}">
-          ${totalAllocated}/${totalRequired}<br>
+          ${formatNumber(totalAllocated)}/${formatNumber(totalRequired)}<br>
           <small>${percent}%</small>
         </td>
         ${weekCells}
@@ -709,6 +1091,8 @@ function renderPlanner() {
 }
 
 async function loadAndRenderPlanner() {
+  const previousSummary = getSelectionSummary();
+
   [projectsData, demandsData, allocationsData, resourcesData, demandHistoryData] = await Promise.all([
     fetchJson("/api/projects"),
     fetchJson("/api/demands"),
@@ -720,6 +1104,18 @@ async function loadAndRenderPlanner() {
   renderPlanner();
   applyWeekTooltips();
   scrollToCurrentWeek();
+
+  if (previousSummary) {
+    const candidates = Array.from(plannerBody.querySelectorAll(`td[data-week="${previousSummary.week_from}"][data-cell]`));
+    const targetCell = candidates.find((cell) => {
+      const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
+      return data.project_id === previousSummary.project_id && data.role === previousSummary.role;
+    });
+
+    if (targetCell) {
+      selectSingleCell(targetCell);
+    }
+  }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {

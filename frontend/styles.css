@@ -593,3 +593,51 @@ body {
 .cell-history {
   position: relative;
 }
+.resource-partial {
+  color: #b45309;
+  font-weight: 700;
+}
+.conflict-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.conflict-dialog {
+  width: min(520px, 92vw);
+  max-height: 80vh;
+  overflow: auto;
+  background: #ffffff;
+  border: 1px solid #d7e0ea;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+  padding: 12px;
+}
+
+.conflict-title {
+  font-size: 13px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.conflict-body {
+  font-size: 11px;
+  color: #374151;
+  line-height: 1.35;
+  margin-bottom: 10px;
+}
+
+.conflict-body p {
+  margin: 4px 0;
+}
+
+.conflict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
