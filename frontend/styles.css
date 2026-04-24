@@ -5,17 +5,19 @@
   --text: #1f2937;
   --muted: #6b7280;
   --primary: #1565c0;
+
   --topbar-h: 42px;
-  --side-w: 430px;
+  --side-w: 470px;
   --bottom-h: 52px;
-  --side-top-h: 420px;
+  --side-top-h: 640px;
 }
 
 * {
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   margin: 0;
   height: 100%;
   font-family: "Segoe UI", Tahoma, sans-serif;
@@ -306,11 +308,12 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-height: 0;
 }
 
 .side-top {
   flex: 0 0 var(--side-top-h);
-  min-height: 120px;
+  min-height: 320px;
   overflow: auto;
   padding-bottom: 4px;
 }
@@ -362,16 +365,24 @@ body {
   padding: 6px;
   background: #fbfdff;
   overflow: hidden;
-  transition: opacity 0.15s ease;
 }
 
 .panel-block-active {
-  min-height: 180px;
+  min-height: 270px;
 }
 
 .panel-block-collapsed {
-  min-height: 44px;
-  opacity: 0.88;
+  min-height: 42px;
+  max-height: 42px;
+  opacity: 0.9;
+}
+
+.panel-block-collapsed .resource-toolbar,
+.panel-block-collapsed .resource-dual,
+.panel-block-collapsed .form-grid,
+.panel-block-collapsed .side-actions,
+.panel-block-collapsed .field-block {
+  display: none;
 }
 
 .panel-block-title {
@@ -405,6 +416,7 @@ body {
   border-radius: 6px;
   padding: 4px 5px;
   font-size: 10px;
+  width: 100%;
 }
 
 .form-grid input[readonly],
@@ -417,6 +429,7 @@ body {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+  margin-top: 8px;
   margin-bottom: 4px;
 }
 
@@ -466,12 +479,13 @@ body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;
+  min-height: 150px;
 }
 
 .resource-column {
   display: flex;
   flex-direction: column;
-  min-height: 160px;
+  min-height: 150px;
 }
 
 .resource-column-title {
@@ -567,4 +581,15 @@ body {
   right: 0;
   top: 1px;
   height: 4px;
+}
+.history-marker {
+  display: inline-block;
+  margin-left: 2px;
+  font-size: 8px;
+  color: #1565c0;
+  font-weight: 700;
+}
+
+.cell-history {
+  position: relative;
 }

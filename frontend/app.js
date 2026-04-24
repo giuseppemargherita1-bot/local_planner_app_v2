@@ -40,6 +40,7 @@ let resourcesData = [];
 let projectsData = [];
 let demandsData = [];
 let allocationsData = [];
+let demandHistoryData = [];
 
 let rowMetaMap = new Map();
 let selectedCells = [];
@@ -194,6 +195,21 @@ function buildAllocationMap(allocations, resources) {
   return map;
 }
 
+function buildHistoryMap(historyRows) {
+  const map = new Map();
+
+  for (const row of historyRows) {
+    const role = String(row.role || "").trim().toUpperCase();
+    const key = `${row.project_id}__${role}__${row.week}`;
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(row);
+  }
+
+  return map;
+}
+
 function buildPlannerRows(projects, demands) {
   const projectsById = new Map(projects.map((p) => [p.id, p]));
   const rowsMap = new Map();
@@ -233,7 +249,7 @@ function getCoverageClass(required, allocated) {
   return "coverage good";
 }
 
-function getCellClass(required, allocated, week) {
+function getCellClass(required, allocated, week, hasHistory) {
   let cls = "cell-empty planner-cell-clickable";
 
   if (required > 0 && allocated >= required) {
@@ -244,6 +260,10 @@ function getCellClass(required, allocated, week) {
 
   if (week === CURRENT_WEEK) {
     cls += " current-col";
+  }
+
+  if (hasHistory) {
+    cls += " cell-history";
   }
 
   return cls;
@@ -597,6 +617,7 @@ function renderPlanner() {
 
   const demandMap = buildDemandMap(demandsData);
   const allocationMap = buildAllocationMap(allocationsData, resourcesData);
+  const historyMap = buildHistoryMap(demandHistoryData);
   const rows = buildPlannerRows(projectsData, demandsData);
 
   if (rows.length === 0) {
@@ -620,9 +641,16 @@ function renderPlanner() {
       const required = demandMap.get(key) || 0;
       const allocated = allocationMap.get(key) || 0;
       const diff = required - allocated;
+      const historyRows = historyMap.get(key) || [];
+      const hasHistory = historyRows.length > 0;
 
       totalRequired += required;
       totalAllocated += allocated;
+
+      const latestHistory = hasHistory ? historyRows[0] : null;
+      const historyTitle = latestHistory
+        ? `Storico fabbisogno: ${latestHistory.old_quantity} -> ${latestHistory.new_quantity} (${latestHistory.created_at})`
+        : "";
 
       const payload = encodeURIComponent(JSON.stringify({
         project_id: row.project_id,
@@ -636,14 +664,15 @@ function renderPlanner() {
 
       return `
         <td
-          class="${getCellClass(required, allocated, week)}"
+          class="${getCellClass(required, allocated, week, hasHistory)}"
           data-cell='${payload}'
           data-row-index="${rowIndex}"
           data-week="${week}"
+          title="${historyTitle}"
         >
           R${required}<br>
           A${allocated}<br>
-          D${diff}
+          D${diff}${hasHistory ? `<span class="history-marker">↺</span>` : ""}
         </td>
       `;
     }).join("");
@@ -680,11 +709,12 @@ function renderPlanner() {
 }
 
 async function loadAndRenderPlanner() {
-  [projectsData, demandsData, allocationsData, resourcesData] = await Promise.all([
+  [projectsData, demandsData, allocationsData, resourcesData, demandHistoryData] = await Promise.all([
     fetchJson("/api/projects"),
     fetchJson("/api/demands"),
     fetchJson("/api/allocations"),
     fetchJson("/api/resources"),
+    fetchJson("/api/demand-history"),
   ]);
 
   renderPlanner();

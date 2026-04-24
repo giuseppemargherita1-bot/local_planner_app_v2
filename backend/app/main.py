@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
 from app.db import init_db, get_connection
 
 
@@ -210,6 +211,8 @@ def list_demands():
 def create_demand(payload: DemandCreate):
     conn = get_connection()
     try:
+        role = payload.role.strip().upper()
+
         cursor = conn.execute(
             """
             INSERT INTO demands (project_id, week, role, quantity, note)
@@ -218,11 +221,28 @@ def create_demand(payload: DemandCreate):
             (
                 payload.project_id,
                 payload.week,
-                payload.role.strip(),
+                role,
                 payload.quantity,
                 payload.note.strip(),
             )
         )
+
+        conn.execute(
+            """
+            INSERT INTO demand_history
+            (project_id, week, role, old_quantity, new_quantity, note)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.project_id,
+                payload.week,
+                role,
+                0,
+                payload.quantity,
+                "Creazione fabbisogno",
+            ),
+        )
+
         conn.commit()
 
         row = conn.execute(
@@ -261,7 +281,7 @@ def upsert_demand_range(payload: DemandRangeUpsert):
         for week in range(week_from, week_to + 1):
             existing = conn.execute(
                 """
-                SELECT id
+                SELECT id, quantity
                 FROM demands
                 WHERE project_id = ? AND week = ? AND UPPER(role) = ?
                 """,
@@ -269,15 +289,35 @@ def upsert_demand_range(payload: DemandRangeUpsert):
             ).fetchone()
 
             if existing:
+                old_quantity = float(existing["quantity"] or 0)
+                new_quantity = float(payload.quantity or 0)
+
                 conn.execute(
                     """
                     UPDATE demands
                     SET quantity = ?, note = ?, role = ?
                     WHERE id = ?
                     """,
-                    (payload.quantity, note, role, existing["id"]),
+                    (new_quantity, note, role, existing["id"]),
                 )
                 updated_ids.append(existing["id"])
+
+                if old_quantity != new_quantity:
+                    conn.execute(
+                        """
+                        INSERT INTO demand_history
+                        (project_id, week, role, old_quantity, new_quantity, note)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            payload.project_id,
+                            week,
+                            role,
+                            old_quantity,
+                            new_quantity,
+                            "Modifica fabbisogno",
+                        ),
+                    )
             else:
                 cursor = conn.execute(
                     """
@@ -287,6 +327,22 @@ def upsert_demand_range(payload: DemandRangeUpsert):
                     (payload.project_id, week, role, payload.quantity, note),
                 )
                 updated_ids.append(cursor.lastrowid)
+
+                conn.execute(
+                    """
+                    INSERT INTO demand_history
+                    (project_id, week, role, old_quantity, new_quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload.project_id,
+                        week,
+                        role,
+                        0,
+                        payload.quantity,
+                        "Creazione fabbisogno",
+                    ),
+                )
 
         conn.commit()
 
@@ -312,6 +368,32 @@ def upsert_demand_range(payload: DemandRangeUpsert):
             "updated_count": len(updated_ids),
             "rows": [dict(row) for row in rows],
         }
+    finally:
+        conn.close()
+
+
+@app.get("/api/demand-history")
+def list_demand_history():
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                h.id,
+                h.project_id,
+                p.name AS project_name,
+                h.week,
+                h.role,
+                h.old_quantity,
+                h.new_quantity,
+                h.note,
+                h.created_at
+            FROM demand_history h
+            JOIN projects p ON p.id = h.project_id
+            ORDER BY h.created_at DESC, h.id DESC
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
