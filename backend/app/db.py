@@ -79,6 +79,22 @@ def init_db():
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(project_id) REFERENCES projects(id)
             );
+
+            CREATE TABLE IF NOT EXISTS allocation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                resource_id INTEGER NOT NULL,
+                resource_name TEXT NOT NULL DEFAULT '',
+                resource_role TEXT NOT NULL DEFAULT '',
+                project_id INTEGER NOT NULL,
+                project_name TEXT NOT NULL DEFAULT '',
+                week INTEGER NOT NULL,
+                role TEXT NOT NULL,
+                hours REAL NOT NULL DEFAULT 0,
+                load_percent REAL NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
             """
         )
 

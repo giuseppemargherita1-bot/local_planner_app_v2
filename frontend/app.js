@@ -40,6 +40,7 @@ let resourcesData = [];
 let projectsData = [];
 let demandsData = [];
 let allocationsData = [];
+let allocationHistoryData = [];
 let demandHistoryData = [];
 
 let rowMetaMap = new Map();
@@ -53,7 +54,7 @@ function clamp(value, min, max) {
 function startVerticalDrag(event) {
   verticalDrag = {
     startX: event.clientX,
-    startWidth: parseInt(getComputedStyle(root).getPropertyValue("--side-w"), 10) || 430,
+    startWidth: parseInt(getComputedStyle(root).getPropertyValue("--side-w"), 10) || 470,
   };
   if (verticalSplitter) verticalSplitter.classList.add("dragging");
   document.body.style.userSelect = "none";
@@ -71,7 +72,7 @@ function startHorizontalDrag(event) {
 function startSideInnerDrag(event) {
   sideInnerDrag = {
     startY: event.clientY,
-    startHeight: parseInt(getComputedStyle(root).getPropertyValue("--side-top-h"), 10) || 420,
+    startHeight: parseInt(getComputedStyle(root).getPropertyValue("--side-top-h"), 10) || 640,
   };
   if (sideInnerSplitter) sideInnerSplitter.classList.add("dragging");
   document.body.style.userSelect = "none";
@@ -80,7 +81,7 @@ function startSideInnerDrag(event) {
 function onPointerMove(event) {
   if (verticalDrag) {
     const delta = verticalDrag.startX - event.clientX;
-    const nextWidth = clamp(verticalDrag.startWidth + delta, 260, 700);
+    const nextWidth = clamp(verticalDrag.startWidth + delta, 260, 760);
     root.style.setProperty("--side-w", `${nextWidth}px`);
   }
 
@@ -92,7 +93,7 @@ function onPointerMove(event) {
 
   if (sideInnerDrag) {
     const delta = event.clientY - sideInnerDrag.startY;
-    const nextHeight = clamp(sideInnerDrag.startHeight + delta, 150, 620);
+    const nextHeight = clamp(sideInnerDrag.startHeight + delta, 150, 720);
     root.style.setProperty("--side-top-h", `${nextHeight}px`);
   }
 }
@@ -120,6 +121,15 @@ async function fetchJson(path, options = {}) {
     throw new Error(`Errore ${response.status} su ${path}`);
   }
   return response.json();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function getWeekStartDate(year, week) {
@@ -176,14 +186,60 @@ function formatNumber(value) {
   return String(rounded).replace(".", ",");
 }
 
+function formatLoad(loadPercent) {
+  const load = Number(loadPercent || 0);
+  if (load >= 99.9) return "1:1";
+  if (load > 0 && load <= 50.1) return "1/2";
+  return `${formatNumber(load / 100)}`;
+}
+
+function shortResourceName(fullName) {
+  const clean = String(fullName || "").trim().replace(/\s+/g, " ");
+  if (!clean) return "-";
+
+  const parts = clean.split(" ");
+  if (parts.length === 1) return parts[0].toUpperCase();
+
+  const surname = parts.slice(0, -1).join(" ").toUpperCase();
+  const firstName = parts[parts.length - 1].toUpperCase();
+  const first3 = firstName.slice(0, 3);
+
+  return `${surname} ${first3}`;
+}
+
+function mansioneLabel(rowRole, resourceRole) {
+  const row = String(rowRole || "").trim().toUpperCase();
+  const res = String(resourceRole || "").trim().toUpperCase();
+
+  if (!res || res === row) return "ok mans";
+  return `no mans ${res}`;
+}
+
+function formatAssignmentLine(item, rowRole) {
+  const name = shortResourceName(item.resource_name || item.resourceName);
+  const realRole = item.resource_role || item.resourceRole || "";
+  const mans = mansioneLabel(rowRole, realRole);
+  const load = formatLoad(item.load_percent || item.loadPercent);
+  return `${name} | ${mans} | ${load}`;
+}
+
 function buildDemandMap(demands) {
   const map = new Map();
   for (const demand of demands) {
     const role = String(demand.role || "").trim().toUpperCase();
-    const key = `${demand.project_id}__${role}__${demand.week}`;
+    const key = `${Number(demand.project_id)}__${role}__${Number(demand.week)}`;
     map.set(key, Number(demand.quantity || 0));
   }
   return map;
+}
+
+function buildDemandRowSet(demands) {
+  const set = new Set();
+  for (const demand of demands) {
+    const role = String(demand.role || "").trim().toUpperCase();
+    set.add(`${Number(demand.project_id)}__${role}`);
+  }
+  return set;
 }
 
 function parseHiringStartWeekFromNote(note) {
@@ -213,17 +269,22 @@ function isResourceAvailableForWeek(resource, week) {
 }
 
 function buildAllocationMap(allocations, resources) {
-  const resourceById = new Map(resources.map((r) => [r.id, r]));
+  const resourceById = new Map(resources.map((r) => [Number(r.id), r]));
+  const demandRowSet = buildDemandRowSet(demandsData);
   const map = new Map();
 
   for (const allocation of allocations) {
-    const resource = resourceById.get(allocation.resource_id);
+    const resource = resourceById.get(Number(allocation.resource_id));
     if (!resource || !resource.is_active) continue;
 
     if (!isResourceAvailableForWeek(resource, Number(allocation.week))) continue;
 
     const role = String(allocation.role || resource.role || "").trim().toUpperCase();
-    const key = `${allocation.project_id}__${role}__${allocation.week}`;
+    const rowKey = `${Number(allocation.project_id)}__${role}`;
+
+    if (!demandRowSet.has(rowKey)) continue;
+
+    const key = `${Number(allocation.project_id)}__${role}__${Number(allocation.week)}`;
     const value = Number(allocation.load_percent || 0) / 100;
     map.set(key, (map.get(key) || 0) + value);
   }
@@ -236,10 +297,8 @@ function buildHistoryMap(historyRows) {
 
   for (const row of historyRows) {
     const role = String(row.role || "").trim().toUpperCase();
-    const key = `${row.project_id}__${role}__${row.week}`;
-    if (!map.has(key)) {
-      map.set(key, []);
-    }
+    const key = `${Number(row.project_id)}__${role}__${Number(row.week)}`;
+    if (!map.has(key)) map.set(key, []);
     map.get(key).push(row);
   }
 
@@ -247,20 +306,20 @@ function buildHistoryMap(historyRows) {
 }
 
 function buildPlannerRows(projects, demands) {
-  const projectsById = new Map(projects.map((p) => [p.id, p]));
+  const projectsById = new Map(projects.map((p) => [Number(p.id), p]));
   const rowsMap = new Map();
 
   for (const demand of demands) {
-    const project = projectsById.get(demand.project_id);
+    const project = projectsById.get(Number(demand.project_id));
     if (!project) continue;
 
     const role = String(demand.role || "").trim().toUpperCase();
-    const rowKey = `${demand.project_id}__${role}`;
+    const rowKey = `${Number(demand.project_id)}__${role}`;
 
     if (!rowsMap.has(rowKey)) {
       rowsMap.set(rowKey, {
         row_key: rowKey,
-        project_id: demand.project_id,
+        project_id: Number(demand.project_id),
         project_name: project.name,
         role,
       });
@@ -268,9 +327,7 @@ function buildPlannerRows(projects, demands) {
   }
 
   const rows = Array.from(rowsMap.values()).sort((a, b) => {
-    if (a.project_name !== b.project_name) {
-      return a.project_name.localeCompare(b.project_name);
-    }
+    if (a.project_name !== b.project_name) return a.project_name.localeCompare(b.project_name);
     return a.role.localeCompare(b.role);
   });
 
@@ -279,28 +336,26 @@ function buildPlannerRows(projects, demands) {
 }
 
 function getCoverageClass(required, allocated) {
-  if (required === 0) return "coverage good";
+  if (required === 0 && allocated === 0) return "coverage good";
+  if (required === 0 && allocated > 0) return "coverage warn";
   if (allocated < required) return "coverage warn";
   if (allocated > required) return "coverage warn";
   return "coverage good";
 }
 
-function getCellClass(required, allocated, week, hasHistory) {
+function getCellClass(required, allocated, week, hasHistory, hasAllocationHistory) {
   let cls = "cell-empty planner-cell-clickable";
 
   if (required > 0 && allocated >= required) {
     cls = "cell-ok planner-cell-clickable";
   } else if (required > 0 && allocated < required) {
     cls = "cell-demand planner-cell-clickable";
+  } else if (required === 0 && allocated > 0) {
+    cls = "cell-demand planner-cell-clickable";
   }
 
-  if (week === CURRENT_WEEK) {
-    cls += " current-col";
-  }
-
-  if (hasHistory) {
-    cls += " cell-history";
-  }
+  if (week === CURRENT_WEEK) cls += " current-col";
+  if (hasHistory || hasAllocationHistory) cls += " cell-history";
 
   return cls;
 }
@@ -336,9 +391,10 @@ function getSelectionSummary() {
   }, 0);
 
   return {
-    project_id: decoded.project_id,
+    project_id: Number(decoded.project_id),
     project_name: decoded.project_name,
     role: decoded.role,
+    row_key: `${Number(decoded.project_id)}__${decoded.role}`,
     week_from: weeks[0],
     week_to: weeks[weeks.length - 1],
     required: selectedCells.length === 1 ? decoded.required : totalRequired,
@@ -351,7 +407,10 @@ function updateSidePanelFromSelection() {
   const summary = getSelectionSummary();
   if (!summary) return;
 
-  selectionBox.textContent = `${summary.project_name} | ${summary.role} | W${String(summary.week_from).padStart(2, "0")}${summary.week_to !== summary.week_from ? ` - W${String(summary.week_to).padStart(2, "0")}` : ""}`;
+  selectionBox.textContent =
+    `${summary.project_name} | ${summary.role} | W${String(summary.week_from).padStart(2, "0")}` +
+    `${summary.week_to !== summary.week_from ? ` - W${String(summary.week_to).padStart(2, "0")}` : ""}`;
+
   detailProject.value = summary.project_name;
   detailRole.value = summary.role;
   detailWeekFrom.value = summary.week_from;
@@ -375,11 +434,8 @@ function applyCellSelectionVisuals() {
   clearCellSelectionVisuals();
 
   selectedCells.forEach((cell, index) => {
-    if (index === 0) {
-      cell.classList.add("planner-cell-selected");
-    } else {
-      cell.classList.add("planner-cell-range");
-    }
+    if (index === 0) cell.classList.add("planner-cell-selected");
+    else cell.classList.add("planner-cell-range");
   });
 }
 
@@ -407,11 +463,8 @@ function extendSelection(direction) {
   );
   if (!targetCell) return;
 
-  if (direction === "right") {
-    selectedCells.push(targetCell);
-  } else {
-    selectedCells.unshift(targetCell);
-  }
+  if (direction === "right") selectedCells.push(targetCell);
+  else selectedCells.unshift(targetCell);
 
   applyCellSelectionVisuals();
   updateSidePanelFromSelection();
@@ -433,7 +486,6 @@ function moveSelection(deltaRow, deltaCol) {
   );
 
   if (!target) return;
-
   selectSingleCell(target);
 }
 
@@ -475,7 +527,7 @@ function getResourceAllocationsForSelectedWeeks(resourceId) {
 
   return allocationsData.filter((allocation) => {
     return (
-      allocation.resource_id === resourceId &&
+      Number(allocation.resource_id) === Number(resourceId) &&
       selectedWeeks.has(Number(allocation.week))
     );
   });
@@ -483,7 +535,7 @@ function getResourceAllocationsForSelectedWeeks(resourceId) {
 
 function getResourceAllocationsForWeek(resourceId, week) {
   return allocationsData.filter((allocation) => {
-    return allocation.resource_id === resourceId && Number(allocation.week) === Number(week);
+    return Number(allocation.resource_id) === Number(resourceId) && Number(allocation.week) === Number(week);
   });
 }
 
@@ -500,8 +552,8 @@ function getAssignedResourcesForSelection() {
       const allocationRole = String(allocation.role || "").trim().toUpperCase();
 
       return (
-        allocation.resource_id === resource.id &&
-        allocation.project_id === summary.project_id &&
+        Number(allocation.resource_id) === Number(resource.id) &&
+        Number(allocation.project_id) === Number(summary.project_id) &&
         allocationRole === summary.role &&
         selectedWeeks.has(Number(allocation.week))
       );
@@ -513,25 +565,23 @@ function getResourceStatus(resource) {
   const summary = getSelectionSummary();
   if (!summary) return "free";
 
-  if (!resource.is_active) {
-    return "inactive";
-  }
-
-  if (isExplicitlyUnavailable(resource)) {
-    return "unavailable";
-  }
+  if (!resource.is_active) return "inactive";
+  if (isExplicitlyUnavailable(resource)) return "unavailable";
 
   const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
-  if (startWeek !== null && summary.week_from < startWeek) {
-    return "future";
-  }
+  if (startWeek !== null && summary.week_from < startWeek) return "future";
 
-  const assigned = getAssignedResourcesForSelection().some((r) => r.id === resource.id);
-  if (assigned) {
-    return "allocated";
-  }
+  const assigned = getAssignedResourcesForSelection().some((r) => Number(r.id) === Number(resource.id));
+  if (assigned) return "allocated";
 
-  const allocations = getResourceAllocationsForSelectedWeeks(resource.id);
+  const demandRowSet = buildDemandRowSet(demandsData);
+
+  const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
+    return demandRowSet.has(rowKey);
+  });
+
   const maxPerWeek = new Map();
 
   allocations.forEach((allocation) => {
@@ -541,13 +591,16 @@ function getResourceStatus(resource) {
 
   const values = Array.from(maxPerWeek.values());
 
-  if (values.some((count) => count >= 2)) {
-    return "saturated";
-  }
+  if (values.some((count) => count >= 2)) return "saturated";
+  if (values.some((count) => count === 1)) return "partial";
 
-  if (values.some((count) => count === 1)) {
-    return "partial";
-  }
+  const historical = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
+    return !demandRowSet.has(rowKey);
+  });
+
+  if (historical.length > 0) return "history";
 
   return "free";
 }
@@ -559,8 +612,16 @@ function allocationShortLabel(allocation) {
   return `${project} ${role} W${String(allocation.week).padStart(2, "0")} ${load}%`;
 }
 
-function getAllocationLocationText(resource) {
-  const allocations = getResourceAllocationsForSelectedWeeks(resource.id);
+function getAllocationLocationText(resource, onlyHistorical = false) {
+  const demandRowSet = buildDemandRowSet(demandsData);
+
+  const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
+    const isHistorical = !demandRowSet.has(rowKey);
+    return onlyHistorical ? isHistorical : !isHistorical;
+  });
+
   if (!allocations.length) return "";
   return allocations.map(allocationShortLabel).join(" / ");
 }
@@ -588,6 +649,11 @@ function getResourceShortInfo(resource, status) {
     return where ? `SATURO: ${where}` : "SATURO";
   }
 
+  if (status === "history") {
+    const where = getAllocationLocationText(resource, true);
+    return where ? `STORICO: ${where}` : "STORICO";
+  }
+
   return "";
 }
 
@@ -597,6 +663,7 @@ function getResourceTooltip(resource, status) {
     return `Assunzione da W${String(startWeek).padStart(2, "0")}`;
   }
 
+  if (status === "history") return getAllocationLocationText(resource, true);
   if (status !== "partial" && status !== "saturated" && status !== "allocated") return "";
 
   return getAllocationLocationText(resource);
@@ -618,6 +685,7 @@ function renderResourceItem(resource, status) {
   if (status === "inactive") classes.push("resource-inactive");
   if (status === "partial") classes.push("resource-partial");
   if (status === "saturated") classes.push("resource-allocated");
+  if (status === "history") classes.push("resource-history");
 
   const tooltip = getResourceTooltip(resource, status);
   const extra = getResourceShortInfo(resource, status);
@@ -627,11 +695,19 @@ function renderResourceItem(resource, status) {
       class="${classes.join(" ")}"
       data-resource-id="${resource.id}"
       data-resource-status="${status}"
-      title="${tooltip}"
+      title="${escapeHtml(tooltip)}"
     >
-      ${resource.name} | ${resource.role || "-"}${extra ? ` | ${extra}` : ""}
+      ${escapeHtml(resource.name)} | ${escapeHtml(resource.role || "-")}${extra ? ` | ${escapeHtml(extra)}` : ""}
     </div>
   `;
+}
+
+function showMessageDialog(title, message) {
+  showConflictDialog(
+    title,
+    `<p>${escapeHtml(message)}</p>`,
+    [{ label: "OK", primary: true, handler: async () => {} }],
+  );
 }
 
 function renderResourceLists() {
@@ -645,29 +721,25 @@ function renderResourceLists() {
   }
 
   const assigned = getAssignedResourcesForSelection();
-  const assignedIds = new Set(assigned.map((r) => r.id));
+  const assignedIds = new Set(assigned.map((r) => Number(r.id)));
 
   const search = resourceSearchInput?.value?.trim() || "";
   const showInactive = !!showInactiveToggle?.checked;
 
-  const visibleAssigned = assigned
-    .filter((resource) => matchesResourceSearch(resource, search));
+  const visibleAssigned = assigned.filter((resource) => matchesResourceSearch(resource, search));
 
-  const visibleAvailable = resourcesData
-    .filter((resource) => {
-      if (assignedIds.has(resource.id)) return false;
-      if (!showInactive && !resource.is_active) return false;
-      return matchesResourceSearch(resource, search);
-    });
+  const visibleAvailable = resourcesData.filter((resource) => {
+    if (assignedIds.has(Number(resource.id))) return false;
+    if (!showInactive && !resource.is_active) return false;
+    return matchesResourceSearch(resource, search);
+  });
 
   assignedResourceList.innerHTML = visibleAssigned.length
     ? visibleAssigned.map((resource) => renderResourceItem(resource, "allocated")).join("")
     : `<div class="resource-item resource-unavailable">Nessuna risorsa assegnata</div>`;
 
   availableResourceList.innerHTML = visibleAvailable.length
-    ? visibleAvailable
-        .map((resource) => renderResourceItem(resource, getResourceStatus(resource)))
-        .join("")
+    ? visibleAvailable.map((resource) => renderResourceItem(resource, getResourceStatus(resource))).join("")
     : `<div class="resource-item resource-unavailable">Nessuna risorsa disponibile</div>`;
 
   assignedResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
@@ -699,11 +771,11 @@ function showConflictDialog(title, bodyHtml, actions) {
   dialog.className = "conflict-dialog";
 
   const actionButtons = actions.map((action, index) => {
-    return `<button class="btn ${action.primary ? "btn-primary" : "btn-light"}" data-action-index="${index}" type="button">${action.label}</button>`;
+    return `<button class="btn ${action.primary ? "btn-primary" : "btn-light"}" data-action-index="${index}" type="button">${escapeHtml(action.label)}</button>`;
   }).join("");
 
   dialog.innerHTML = `
-    <div class="conflict-title">${title}</div>
+    <div class="conflict-title">${escapeHtml(title)}</div>
     <div class="conflict-body">${bodyHtml}</div>
     <div class="conflict-actions">${actionButtons}</div>
   `;
@@ -730,26 +802,42 @@ function allocationLabel(allocation) {
   return allocationShortLabel(allocation);
 }
 
+function selectedRowExistsInPlanner() {
+  const summary = getSelectionSummary();
+  if (!summary) return false;
+
+  const demandRowSet = buildDemandRowSet(demandsData);
+  return demandRowSet.has(summary.row_key);
+}
+
 async function handleAvailableResourceDoubleClick(resourceId) {
   const summary = getSelectionSummary();
   if (!summary) return;
 
-  const resource = resourcesData.find((item) => item.id === resourceId);
+  if (!selectedRowExistsInPlanner()) {
+    showMessageDialog(
+      "Riga non attiva",
+      "Prima crea/attiva il fabbisogno per questa commessa e mansione, poi assegna la risorsa.",
+    );
+    return;
+  }
+
+  const resource = resourcesData.find((item) => Number(item.id) === Number(resourceId));
   if (!resource) return;
 
   if (summary.week_from !== summary.week_to) {
-    const conflicts = getResourceAllocationsForSelectedWeeks(resourceId);
+    const demandRowSet = buildDemandRowSet(demandsData);
+    const conflicts = getResourceAllocationsForSelectedWeeks(resourceId).filter((allocation) => {
+      const allocationRole = String(allocation.role || "").trim().toUpperCase();
+      const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
+      return demandRowSet.has(rowKey);
+    });
+
     if (conflicts.length > 0) {
       showConflictDialog(
         "Conflitto su più settimane",
         "La risorsa è già allocata in almeno una delle settimane selezionate.<br>Gestisci una settimana alla volta.",
-        [
-          {
-            label: "OK",
-            primary: true,
-            handler: async () => {},
-          },
-        ],
+        [{ label: "OK", primary: true, handler: async () => {} }],
       );
       return;
     }
@@ -759,7 +847,12 @@ async function handleAvailableResourceDoubleClick(resourceId) {
   }
 
   const week = summary.week_from;
-  const existing = getResourceAllocationsForWeek(resourceId, week);
+  const demandRowSet = buildDemandRowSet(demandsData);
+  const existing = getResourceAllocationsForWeek(resourceId, week).filter((allocation) => {
+    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
+    return demandRowSet.has(rowKey);
+  });
 
   if (existing.length === 0) {
     await resolveAllocationConflict(resourceId, "direct");
@@ -772,15 +865,12 @@ async function handleAvailableResourceDoubleClick(resourceId) {
     showConflictDialog(
       "Risorsa già allocata",
       `
-        <p><strong>${resource.name}</strong> è già allocato su:</p>
-        <p>${allocationLabel(old)}</p>
+        <p><strong>${escapeHtml(resource.name)}</strong> è già allocato su:</p>
+        <p>${escapeHtml(allocationLabel(old))}</p>
         <p>Cosa vuoi fare?</p>
       `,
       [
-        {
-          label: "Annulla",
-          handler: async () => {},
-        },
+        { label: "Annulla", handler: async () => {} },
         {
           label: "Sostituisci",
           primary: true,
@@ -801,16 +891,13 @@ async function handleAvailableResourceDoubleClick(resourceId) {
   }
 
   const body = `
-    <p><strong>${resource.name}</strong> è già allocato su 2 commesse:</p>
-    ${existing.map((item) => `<p>${allocationLabel(item)}</p>`).join("")}
+    <p><strong>${escapeHtml(resource.name)}</strong> è già allocato su 2 commesse:</p>
+    ${existing.map((item) => `<p>${escapeHtml(allocationLabel(item))}</p>`).join("")}
     <p>Scegli cosa tenere.</p>
   `;
 
   const actions = [
-    {
-      label: "Annulla",
-      handler: async () => {},
-    },
+    { label: "Annulla", handler: async () => {} },
     ...existing.map((item) => ({
       label: `Togli ${item.project_name}`,
       handler: async () => {
@@ -833,22 +920,27 @@ async function resolveAllocationConflict(resourceId, mode, removeAllocationId = 
   const summary = getSelectionSummary();
   if (!summary) return;
 
-  await fetchJson("/api/allocations/resolve-conflict", {
+  const result = await fetchJson("/api/allocations/resolve-conflict", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      resource_id: resourceId,
-      project_id: summary.project_id,
+      resource_id: Number(resourceId),
+      project_id: Number(summary.project_id),
       role: summary.role,
-      week: summary.week_from,
+      week: Number(summary.week_from),
       mode,
       remove_allocation_id: removeAllocationId,
       hours: 40,
       note: "Risoluzione conflitto da planner V2",
     }),
   });
+
+  if (result && result.ok === false && result.reason === "demand_row_missing") {
+    showMessageDialog(
+      "Riga non attiva",
+      result.message || "Prima crea/attiva il fabbisogno per questa commessa e mansione.",
+    );
+  }
 
   await loadAndRenderPlanner();
   setMode("resources");
@@ -860,19 +952,13 @@ function handleGridKeydown(event) {
   switch (event.key) {
     case "ArrowRight":
       event.preventDefault();
-      if (event.ctrlKey) {
-        extendSelection("right");
-      } else {
-        moveSelection(0, 1);
-      }
+      if (event.ctrlKey) extendSelection("right");
+      else moveSelection(0, 1);
       break;
     case "ArrowLeft":
       event.preventDefault();
-      if (event.ctrlKey) {
-        extendSelection("left");
-      } else {
-        moveSelection(0, -1);
-      }
+      if (event.ctrlKey) extendSelection("left");
+      else moveSelection(0, -1);
       break;
     case "ArrowDown":
       event.preventDefault();
@@ -884,19 +970,13 @@ function handleGridKeydown(event) {
       break;
     case "Enter":
       event.preventDefault();
-      if (activeMode === "resources") {
-        moveFocusToResourcesPanel();
-      } else {
-        moveFocusToDemandPanel();
-      }
+      if (activeMode === "resources") moveFocusToResourcesPanel();
+      else moveFocusToDemandPanel();
       break;
     case "Tab":
       event.preventDefault();
-      if (activeMode === "demand") {
-        setMode("resources");
-      } else {
-        setMode("demand");
-      }
+      if (activeMode === "demand") setMode("resources");
+      else setMode("demand");
       break;
     case "Delete":
     case "Backspace":
@@ -924,19 +1004,17 @@ async function saveDemandRange() {
   if (!summary) return;
 
   const payload = {
-    project_id: summary.project_id,
+    project_id: Number(summary.project_id),
     role: summary.role,
     week_from: Number(detailWeekFrom.value),
     week_to: Number(detailWeekTo.value),
     quantity: Number(String(detailRequired.value).replace(",", ".")),
-    note: "",
+    note: "Salvataggio da planner V2",
   };
 
   await fetchJson("/api/demands/upsert-range", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
@@ -948,22 +1026,24 @@ async function assignResourceToSelection(resourceId) {
   const summary = getSelectionSummary();
   if (!summary) return;
 
-  await fetchJson("/api/allocations/assign-range", {
+  const result = await fetchJson("/api/allocations/assign-range", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      resource_id: resourceId,
-      project_id: summary.project_id,
+      resource_id: Number(resourceId),
+      project_id: Number(summary.project_id),
       role: summary.role,
-      week_from: summary.week_from,
-      week_to: summary.week_to,
+      week_from: Number(summary.week_from),
+      week_to: Number(summary.week_to),
       hours: 40,
       load_percent: 100,
       note: "Assegnazione da planner V2",
     }),
   });
+
+  if (result && result.message && Array.isArray(result.skipped) && result.skipped.includes("demand_row_missing")) {
+    showMessageDialog("Riga non attiva", result.message);
+  }
 
   await loadAndRenderPlanner();
   setMode("resources");
@@ -975,15 +1055,13 @@ async function removeResourceFromSelection(resourceId) {
 
   await fetchJson("/api/allocations/remove-range", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      resource_id: resourceId,
-      project_id: summary.project_id,
+      resource_id: Number(resourceId),
+      project_id: Number(summary.project_id),
       role: summary.role,
-      week_from: summary.week_from,
-      week_to: summary.week_to,
+      week_from: Number(summary.week_from),
+      week_to: Number(summary.week_to),
       hours: 40,
       load_percent: 100,
       note: "Rimozione da planner V2",
@@ -994,12 +1072,104 @@ async function removeResourceFromSelection(resourceId) {
   setMode("resources");
 }
 
+function getCellAssignments(projectId, role, week) {
+  const normalizedRole = String(role || "").trim().toUpperCase();
+
+  return allocationsData.filter((item) => {
+    return (
+      Number(item.project_id) === Number(projectId) &&
+      String(item.role || "").trim().toUpperCase() === normalizedRole &&
+      Number(item.week) === Number(week)
+    );
+  });
+}
+
+function getCellReleasedAssignments(projectId, role, week) {
+  const normalizedRole = String(role || "").trim().toUpperCase();
+
+  return allocationHistoryData.filter((item) => {
+    return (
+      Number(item.project_id) === Number(projectId) &&
+      String(item.role || "").trim().toUpperCase() === normalizedRole &&
+      Number(item.week) === Number(week)
+    );
+  });
+}
+
+function buildCellCalloutHtml(projectName, role, week, assignments, released, demandHistoryRows) {
+  const parts = [];
+
+  parts.push(`<div class="cell-callout-title">${escapeHtml(projectName)} | ${escapeHtml(role)} | W${String(week).padStart(2, "0")}</div>`);
+
+  if (assignments.length) {
+    parts.push(`<div class="cell-callout-section">Assegnati</div>`);
+    assignments.forEach((item) => {
+      parts.push(`<div class="cell-callout-line">${escapeHtml(formatAssignmentLine(item, role))}</div>`);
+    });
+  }
+
+  if (released.length) {
+    parts.push(`<div class="cell-callout-section">Non più conteggiati</div>`);
+    released.forEach((item) => {
+      const line = `${formatAssignmentLine(item, role)} | ${item.reason || "storico"}`;
+      parts.push(`<div class="cell-callout-line cell-callout-released">${escapeHtml(line)}</div>`);
+    });
+  }
+
+  if (demandHistoryRows.length) {
+    const latest = demandHistoryRows[0];
+    parts.push(`<div class="cell-callout-section">Storico fabbisogno</div>`);
+    parts.push(
+      `<div class="cell-callout-line">${escapeHtml(latest.old_quantity)} → ${escapeHtml(latest.new_quantity)} | ${escapeHtml(latest.created_at || "")}</div>`
+    );
+  }
+
+  if (!assignments.length && !released.length && !demandHistoryRows.length) {
+    parts.push(`<div class="cell-callout-line muted">Nessun dettaglio operativo.</div>`);
+  }
+
+  return parts.join("");
+}
+
+function showCellCallout(event, html) {
+  hideCellCallout();
+
+  const callout = document.createElement("div");
+  callout.className = "cell-callout";
+  callout.id = "cellCallout";
+  callout.innerHTML = html;
+
+  document.body.appendChild(callout);
+
+  const margin = 12;
+  const rect = callout.getBoundingClientRect();
+  let left = event.clientX + margin;
+  let top = event.clientY + margin;
+
+  if (left + rect.width > window.innerWidth - 8) {
+    left = event.clientX - rect.width - margin;
+  }
+
+  if (top + rect.height > window.innerHeight - 8) {
+    top = event.clientY - rect.height - margin;
+  }
+
+  callout.style.left = `${Math.max(8, left)}px`;
+  callout.style.top = `${Math.max(8, top)}px`;
+}
+
+function hideCellCallout() {
+  const existing = document.getElementById("cellCallout");
+  if (existing) existing.remove();
+}
+
 function renderPlanner() {
   if (!plannerBody) return;
 
   const demandMap = buildDemandMap(demandsData);
   const allocationMap = buildAllocationMap(allocationsData, resourcesData);
   const historyMap = buildHistoryMap(demandHistoryData);
+  const allocationHistoryMap = buildHistoryMap(allocationHistoryData);
   const rows = buildPlannerRows(projectsData, demandsData);
 
   if (rows.length === 0) {
@@ -1024,15 +1194,17 @@ function renderPlanner() {
       const allocated = allocationMap.get(key) || 0;
       const diff = required - allocated;
       const historyRows = historyMap.get(key) || [];
+      const releasedRows = allocationHistoryMap.get(key) || [];
       const hasHistory = historyRows.length > 0;
+      const hasAllocationHistory = releasedRows.length > 0;
+      const assignments = getCellAssignments(row.project_id, row.role, week);
 
       totalRequired += required;
       totalAllocated += allocated;
 
-      const latestHistory = hasHistory ? historyRows[0] : null;
-      const historyTitle = latestHistory
-        ? `Storico fabbisogno: ${latestHistory.old_quantity} -> ${latestHistory.new_quantity} (${latestHistory.created_at})`
-        : "";
+      const calloutHtml = encodeURIComponent(
+        buildCellCalloutHtml(row.project_name, row.role, week, assignments, releasedRows, historyRows)
+      );
 
       const payload = encodeURIComponent(JSON.stringify({
         project_id: row.project_id,
@@ -1046,28 +1218,26 @@ function renderPlanner() {
 
       return `
         <td
-          class="${getCellClass(required, allocated, week, hasHistory)}"
+          class="${getCellClass(required, allocated, week, hasHistory, hasAllocationHistory)}"
           data-cell='${payload}'
+          data-callout='${calloutHtml}'
           data-row-index="${rowIndex}"
           data-week="${week}"
-          title="${historyTitle}"
         >
           R${formatNumber(required)}<br>
           A${formatNumber(allocated)}<br>
-          D${formatNumber(diff)}${hasHistory ? `<span class="history-marker">↺</span>` : ""}
+          D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">↺</span>` : ""}
         </td>
       `;
     }).join("");
 
     const coverageClass = getCoverageClass(totalRequired, totalAllocated);
-    const percent = totalRequired > 0
-      ? Math.round((totalAllocated / totalRequired) * 100)
-      : 100;
+    const percent = totalRequired > 0 ? Math.round((totalAllocated / totalRequired) * 100) : 100;
 
     return `
       <tr>
-        <td class="sticky-col">${row.project_name}</td>
-        <td class="sticky-col second">${row.role}</td>
+        <td class="sticky-col">${escapeHtml(row.project_name)}</td>
+        <td class="sticky-col second">${escapeHtml(row.role)}</td>
         <td class="sticky-col third ${coverageClass}">
           ${formatNumber(totalAllocated)}/${formatNumber(totalRequired)}<br>
           <small>${percent}%</small>
@@ -1082,6 +1252,20 @@ function renderPlanner() {
       selectSingleCell(cell);
       moveFocusToGrid();
     });
+
+    cell.addEventListener("mouseenter", (event) => {
+      const html = decodeURIComponent(cell.dataset.callout || "");
+      showCellCallout(event, html);
+    });
+
+    cell.addEventListener("mousemove", (event) => {
+      const html = decodeURIComponent(cell.dataset.callout || "");
+      showCellCallout(event, html);
+    });
+
+    cell.addEventListener("mouseleave", () => {
+      hideCellCallout();
+    });
   });
 
   const firstCurrentCell = plannerBody.querySelector("td[data-cell].current-col");
@@ -1093,12 +1277,13 @@ function renderPlanner() {
 async function loadAndRenderPlanner() {
   const previousSummary = getSelectionSummary();
 
-  [projectsData, demandsData, allocationsData, resourcesData, demandHistoryData] = await Promise.all([
+  [projectsData, demandsData, allocationsData, resourcesData, demandHistoryData, allocationHistoryData] = await Promise.all([
     fetchJson("/api/projects"),
     fetchJson("/api/demands"),
     fetchJson("/api/allocations"),
     fetchJson("/api/resources"),
     fetchJson("/api/demand-history"),
+    fetchJson("/api/allocation-history"),
   ]);
 
   renderPlanner();
@@ -1109,7 +1294,7 @@ async function loadAndRenderPlanner() {
     const candidates = Array.from(plannerBody.querySelectorAll(`td[data-week="${previousSummary.week_from}"][data-cell]`));
     const targetCell = candidates.find((cell) => {
       const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
-      return data.project_id === previousSummary.project_id && data.role === previousSummary.role;
+      return Number(data.project_id) === Number(previousSummary.project_id) && data.role === previousSummary.role;
     });
 
     if (targetCell) {
@@ -1136,26 +1321,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       detailWeekTo,
       detailRange,
     ].forEach((field) => {
-      if (field) {
-        field.addEventListener("keydown", handleDetailKeydown);
-      }
+      if (field) field.addEventListener("keydown", handleDetailKeydown);
     });
 
-    if (modeDemandBtn) {
-      modeDemandBtn.addEventListener("click", () => setMode("demand"));
-    }
-
-    if (modeResourcesBtn) {
-      modeResourcesBtn.addEventListener("click", () => setMode("resources"));
-    }
-
-    if (resourceSearchInput) {
-      resourceSearchInput.addEventListener("input", renderResourceLists);
-    }
-
-    if (showInactiveToggle) {
-      showInactiveToggle.addEventListener("change", renderResourceLists);
-    }
+    if (modeDemandBtn) modeDemandBtn.addEventListener("click", () => setMode("demand"));
+    if (modeResourcesBtn) modeResourcesBtn.addEventListener("click", () => setMode("resources"));
+    if (resourceSearchInput) resourceSearchInput.addEventListener("input", renderResourceLists);
+    if (showInactiveToggle) showInactiveToggle.addEventListener("change", renderResourceLists);
 
     if (saveDemandBtn) {
       saveDemandBtn.addEventListener("click", async () => {

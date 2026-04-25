@@ -641,3 +641,48 @@ body {
   gap: 6px;
   justify-content: flex-end;
 }
+.resource-history {
+  color: #a21caf;
+  font-weight: 700;
+}
+.cell-callout {
+  position: fixed;
+  z-index: 9998;
+  max-width: 420px;
+  background: #ffffff;
+  border: 1px solid #c8d6e6;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #1f2937;
+  pointer-events: none;
+}
+
+.cell-callout-title {
+  font-weight: 800;
+  margin-bottom: 6px;
+  color: #0f172a;
+}
+
+.cell-callout-section {
+  font-weight: 800;
+  margin-top: 6px;
+  margin-bottom: 2px;
+  color: #334155;
+}
+
+.cell-callout-line {
+  margin: 2px 0;
+}
+
+.cell-callout-released {
+  text-decoration: line-through;
+  color: #7c3aed;
+  font-style: italic;
+}
+
+.cell-callout-line.muted {
+  color: #64748b;
+}
