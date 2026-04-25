@@ -686,3 +686,134 @@ body {
 .cell-callout-line.muted {
   color: #64748b;
 }
+.planner-subtotals-row th {
+  background: #eaf2ff;
+  color: #0f172a;
+  font-size: 11px;
+  line-height: 1.25;
+  font-weight: 800;
+  border-bottom: 2px solid #b6c8e3;
+}
+
+.week-subtotal-head {
+  min-width: 64px;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.week-subtotal-head .metric {
+  display: block;
+  line-height: 1.25;
+}
+
+.week-head.current-week,
+.week-head.second-line.current-week {
+  background: #dbeafe;
+}
+/* Subtotali planner stile vecchio planner */
+.planner-subtotals-row th {
+  background: #f6f9fe !important;
+  color: #5f7290 !important;
+  font-size: 10px !important;
+  line-height: 1.05 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+  padding: 3px 4px !important;
+}
+
+.planner-subtotals-row .week-subtotal-head,
+.planner-subtotals-label {
+  min-width: 62px !important;
+  max-width: 62px !important;
+  text-align: center !important;
+  padding: 3px 4px !important;
+  background: #f6f9fe !important;
+  color: #5f7290 !important;
+  font-weight: 600 !important;
+}
+
+.planner-subtotals-row .metric,
+.planner-subtotals-row .subtotal-line {
+  display: block !important;
+  font-size: 10px !important;
+  line-height: 1.05 !important;
+  font-weight: 600 !important;
+}
+
+.week-subtotal-head {
+  min-width: 62px !important;
+  max-width: 62px !important;
+  white-space: nowrap !important;
+  text-align: center !important;
+}
+
+.week-head.current-week,
+.week-head.second-line.current-week {
+  background: #eaf2ff !important;
+}
+/* Subtotali planner ultra compatti */
+.planner-subtotals-row th {
+  background: #f7faff !important;
+  color: #5f7290 !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+  padding: 1px 2px !important;
+  height: 28px !important;
+  max-height: 28px !important;
+  vertical-align: middle !important;
+}
+
+.planner-subtotals-row .week-subtotal-head,
+.planner-subtotals-label {
+  min-width: 48px !important;
+  max-width: 48px !important;
+  width: 48px !important;
+  text-align: center !important;
+  padding: 1px 2px !important;
+  background: #f7faff !important;
+  color: #5f7290 !important;
+  font-weight: 600 !important;
+}
+
+.planner-subtotals-row .metric,
+.planner-subtotals-row .subtotal-line {
+  display: block !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.15px !important;
+}
+
+.week-subtotal-head {
+  min-width: 48px !important;
+  max-width: 48px !important;
+  width: 48px !important;
+  white-space: nowrap !important;
+  text-align: center !important;
+}
+
+.week-head,
+.week-head.second-line,
+#plannerMatrix .week-head {
+  min-width: 48px !important;
+  max-width: 48px !important;
+  width: 48px !important;
+  padding-left: 1px !important;
+  padding-right: 1px !important;
+}
+
+.planner-cell,
+#sheet-planner .planner-cell {
+  min-width: 48px !important;
+  max-width: 48px !important;
+  width: 48px !important;
+  padding-left: 1px !important;
+  padding-right: 1px !important;
+}
+
+.planner-cell .metric {
+  font-size: 9px !important;
+  line-height: 1 !important;
+}

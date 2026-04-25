@@ -5,6 +5,9 @@ const sideInnerSplitter = document.getElementById("sideInnerSplitter");
 const plannerGridWrap = document.getElementById("plannerGridWrap");
 const plannerBody = document.getElementById("plannerBody");
 
+const plannerTable = document.querySelector(".planner-table") || document.querySelector("table");
+const plannerHead = document.querySelector("thead");
+
 const selectionBox = document.getElementById("selectionBox");
 const detailProject = document.getElementById("detailProject");
 const detailRole = document.getElementById("detailRole");
@@ -46,6 +49,8 @@ let demandHistoryData = [];
 let rowMetaMap = new Map();
 let selectedCells = [];
 let activeMode = "demand";
+
+let extSequenceMap = new Map();
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -169,7 +174,7 @@ function applyWeekTooltips() {
 
 function scrollToCurrentWeek() {
   if (!plannerGridWrap) return;
-  const current = document.querySelector(".second-line.current-week");
+  const current = document.querySelector(".second-line.current-week, .week-head.current-week");
   if (!current) return;
 
   const leftStickyWidth = 140 + 160 + 56;
@@ -177,7 +182,7 @@ function scrollToCurrentWeek() {
 }
 
 function roundOneDecimal(value) {
-  return Math.round(value * 10) / 10;
+  return Math.round(Number(value || 0) * 10) / 10;
 }
 
 function formatNumber(value) {
@@ -191,6 +196,17 @@ function formatLoad(loadPercent) {
   if (load >= 99.9) return "1:1";
   if (load > 0 && load <= 50.1) return "1/2";
   return `${formatNumber(load / 100)}`;
+}
+
+function formatAllocatedDisplay(internalAllocated, externalAllocated) {
+  const internal = roundOneDecimal(Number(internalAllocated || 0));
+  const external = roundOneDecimal(Number(externalAllocated || 0));
+
+  if (external > 0) {
+    return `${formatNumber(internal)}+${formatNumber(external)}`;
+  }
+
+  return formatNumber(internal);
 }
 
 function shortResourceName(fullName) {
@@ -207,17 +223,96 @@ function shortResourceName(fullName) {
   return `${surname} ${first3}`;
 }
 
+function normalizeRole(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function normalizeExtRoleLabel(role) {
+  return normalizeRole(role)
+    .replace(/\s+/g, " ")
+    .replace(/\s+EXT$/g, "")
+    .replace(/-EXT$/g, "")
+    .trim();
+}
+
+function isExternalResource(resource) {
+  if (!resource) return false;
+
+  const name = normalizeRole(resource.name || resource.resource_name || "");
+  const role = normalizeRole(resource.role || resource.resource_role || "");
+
+  return (
+    name.includes("-EXT") ||
+    name.endsWith(" EXT") ||
+    role.includes("-EXT") ||
+    role.endsWith(" EXT")
+  );
+}
+
+function getResourceById(resourceId) {
+  return resourcesData.find((resource) => Number(resource.id) === Number(resourceId)) || null;
+}
+
+function getAllocationResource(allocation) {
+  return getResourceById(allocation.resource_id) || {
+    id: allocation.resource_id,
+    name: allocation.resource_name || allocation.resourceName || "",
+    role: allocation.resource_role || allocation.resourceRole || "",
+  };
+}
+
 function mansioneLabel(rowRole, resourceRole) {
-  const row = String(rowRole || "").trim().toUpperCase();
-  const res = String(resourceRole || "").trim().toUpperCase();
+  const row = normalizeRole(rowRole);
+  const res = normalizeRole(resourceRole);
 
   if (!res || res === row) return "ok mans";
   return `no mans ${res}`;
 }
 
-function formatAssignmentLine(item, rowRole) {
-  const name = shortResourceName(item.resource_name || item.resourceName);
-  const realRole = item.resource_role || item.resourceRole || "";
+function getExtSequenceKey(role, week) {
+  return `${normalizeExtRoleLabel(role)}__${Number(week)}`;
+}
+
+function getExtDisplayName(allocation, rowRole, week) {
+  const allocationId = Number(allocation.id || allocation.history_id || allocation.allocation_id || 0);
+  const role = normalizeExtRoleLabel(rowRole || allocation.role || allocation.resource_role || "EXT");
+  const key = getExtSequenceKey(role, week);
+
+  if (!extSequenceMap.has(key)) {
+    extSequenceMap.set(key, {
+      next: 1,
+      byAllocationId: new Map(),
+    });
+  }
+
+  const bucket = extSequenceMap.get(key);
+
+  if (allocationId && bucket.byAllocationId.has(allocationId)) {
+    return `${role}${bucket.byAllocationId.get(allocationId)}-EXT`;
+  }
+
+  const current = bucket.next;
+  bucket.next += 1;
+
+  if (allocationId) {
+    bucket.byAllocationId.set(allocationId, current);
+  }
+
+  return `${role}${current}-EXT`;
+}
+
+function formatAssignmentLine(item, rowRole, week = null) {
+  const resource = getAllocationResource(item);
+  const isExt = isExternalResource(resource) || isExternalResource(item);
+
+  if (isExt) {
+    const extName = getExtDisplayName(item, rowRole, week || item.week);
+    const load = formatLoad(item.load_percent || item.loadPercent || 100);
+    return `${extName} | EXT | ${load}`;
+  }
+
+  const name = shortResourceName(resource.name || item.resource_name || item.resourceName);
+  const realRole = resource.role || item.resource_role || item.resourceRole || "";
   const mans = mansioneLabel(rowRole, realRole);
   const load = formatLoad(item.load_percent || item.loadPercent);
   return `${name} | ${mans} | ${load}`;
@@ -226,7 +321,7 @@ function formatAssignmentLine(item, rowRole) {
 function buildDemandMap(demands) {
   const map = new Map();
   for (const demand of demands) {
-    const role = String(demand.role || "").trim().toUpperCase();
+    const role = normalizeRole(demand.role);
     const key = `${Number(demand.project_id)}__${role}__${Number(demand.week)}`;
     map.set(key, Number(demand.quantity || 0));
   }
@@ -236,21 +331,21 @@ function buildDemandMap(demands) {
 function buildDemandRowSet(demands) {
   const set = new Set();
   for (const demand of demands) {
-    const role = String(demand.role || "").trim().toUpperCase();
+    const role = normalizeRole(demand.role);
     set.add(`${Number(demand.project_id)}__${role}`);
   }
   return set;
 }
 
 function parseHiringStartWeekFromNote(note) {
-  const text = String(note || "").toUpperCase();
+  const text = normalizeRole(note);
   const match = text.match(/ASSUNZIONE\s+DA\s+W?\s*(\d{1,2})/);
   if (!match) return null;
   return Number(match[1]);
 }
 
 function isExplicitlyUnavailable(resource) {
-  const text = String(resource.availability_note || "").toUpperCase();
+  const text = normalizeRole(resource.availability_note || "");
   return (
     text.includes("INDISP") ||
     text.includes("INDISPONIBILE") ||
@@ -259,6 +354,8 @@ function isExplicitlyUnavailable(resource) {
 }
 
 function isResourceAvailableForWeek(resource, week) {
+  if (isExternalResource(resource)) return true;
+
   if (!resource.is_active) return false;
   if (isExplicitlyUnavailable(resource)) return false;
 
@@ -268,35 +365,48 @@ function isResourceAvailableForWeek(resource, week) {
   return true;
 }
 
-function buildAllocationMap(allocations, resources) {
+function buildAllocationMaps(allocations, resources) {
   const resourceById = new Map(resources.map((r) => [Number(r.id), r]));
   const demandRowSet = buildDemandRowSet(demandsData);
-  const map = new Map();
+  const totalMap = new Map();
+  const internalMap = new Map();
+  const externalMap = new Map();
 
   for (const allocation of allocations) {
     const resource = resourceById.get(Number(allocation.resource_id));
-    if (!resource || !resource.is_active) continue;
+    if (!resource) continue;
 
     if (!isResourceAvailableForWeek(resource, Number(allocation.week))) continue;
 
-    const role = String(allocation.role || resource.role || "").trim().toUpperCase();
+    const role = normalizeRole(allocation.role || resource.role || "");
     const rowKey = `${Number(allocation.project_id)}__${role}`;
 
     if (!demandRowSet.has(rowKey)) continue;
 
     const key = `${Number(allocation.project_id)}__${role}__${Number(allocation.week)}`;
     const value = Number(allocation.load_percent || 0) / 100;
-    map.set(key, (map.get(key) || 0) + value);
+
+    totalMap.set(key, (totalMap.get(key) || 0) + value);
+
+    if (isExternalResource(resource)) {
+      externalMap.set(key, (externalMap.get(key) || 0) + value);
+    } else {
+      internalMap.set(key, (internalMap.get(key) || 0) + value);
+    }
   }
 
-  return map;
+  return {
+    totalMap,
+    internalMap,
+    externalMap,
+  };
 }
 
 function buildHistoryMap(historyRows) {
   const map = new Map();
 
   for (const row of historyRows) {
-    const role = String(row.role || "").trim().toUpperCase();
+    const role = normalizeRole(row.role);
     const key = `${Number(row.project_id)}__${role}__${Number(row.week)}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(row);
@@ -313,7 +423,7 @@ function buildPlannerRows(projects, demands) {
     const project = projectsById.get(Number(demand.project_id));
     if (!project) continue;
 
-    const role = String(demand.role || "").trim().toUpperCase();
+    const role = normalizeRole(demand.role);
     const rowKey = `${Number(demand.project_id)}__${role}`;
 
     if (!rowsMap.has(rowKey)) {
@@ -390,6 +500,16 @@ function getSelectionSummary() {
     return sum + Number(data.allocated || 0);
   }, 0);
 
+  const totalInternalAllocated = selectedCells.reduce((sum, cell) => {
+    const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
+    return sum + Number(data.internalAllocated || 0);
+  }, 0);
+
+  const totalExternalAllocated = selectedCells.reduce((sum, cell) => {
+    const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
+    return sum + Number(data.externalAllocated || 0);
+  }, 0);
+
   return {
     project_id: Number(decoded.project_id),
     project_name: decoded.project_name,
@@ -399,6 +519,8 @@ function getSelectionSummary() {
     week_to: weeks[weeks.length - 1],
     required: selectedCells.length === 1 ? decoded.required : totalRequired,
     allocated: totalAllocated,
+    internalAllocated: totalInternalAllocated,
+    externalAllocated: totalExternalAllocated,
     diff: totalRequired - totalAllocated,
   };
 }
@@ -417,7 +539,7 @@ function updateSidePanelFromSelection() {
   detailWeekTo.value = summary.week_to;
   detailRange.value = getWeekRangeLabel(summary.week_from, summary.week_to);
   detailRequired.value = formatNumber(summary.required);
-  detailAllocated.value = formatNumber(summary.allocated);
+  detailAllocated.value = formatAllocatedDisplay(summary.internalAllocated, summary.externalAllocated);
   detailDiff.value = formatNumber(summary.required - summary.allocated);
 
   renderResourceLists();
@@ -549,7 +671,7 @@ function getAssignedResourcesForSelection() {
     if (!isResourceAvailableForWeek(resource, summary.week_from)) return false;
 
     return allocationsData.some((allocation) => {
-      const allocationRole = String(allocation.role || "").trim().toUpperCase();
+      const allocationRole = normalizeRole(allocation.role || "");
 
       return (
         Number(allocation.resource_id) === Number(resource.id) &&
@@ -565,6 +687,8 @@ function getResourceStatus(resource) {
   const summary = getSelectionSummary();
   if (!summary) return "free";
 
+  if (isExternalResource(resource)) return "free";
+
   if (!resource.is_active) return "inactive";
   if (isExplicitlyUnavailable(resource)) return "unavailable";
 
@@ -577,7 +701,7 @@ function getResourceStatus(resource) {
   const demandRowSet = buildDemandRowSet(demandsData);
 
   const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
-    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return demandRowSet.has(rowKey);
   });
@@ -595,7 +719,7 @@ function getResourceStatus(resource) {
   if (values.some((count) => count === 1)) return "partial";
 
   const historical = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
-    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return !demandRowSet.has(rowKey);
   });
@@ -616,7 +740,7 @@ function getAllocationLocationText(resource, onlyHistorical = false) {
   const demandRowSet = buildDemandRowSet(demandsData);
 
   const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
-    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     const isHistorical = !demandRowSet.has(rowKey);
     return onlyHistorical ? isHistorical : !isHistorical;
@@ -627,6 +751,7 @@ function getAllocationLocationText(resource, onlyHistorical = false) {
 }
 
 function getResourceShortInfo(resource, status) {
+  if (isExternalResource(resource)) return "EXT";
   if (status === "inactive") return "CESSATO";
   if (status === "unavailable") return "INDISP";
   if (status === "future") {
@@ -658,6 +783,8 @@ function getResourceShortInfo(resource, status) {
 }
 
 function getResourceTooltip(resource, status) {
+  if (isExternalResource(resource)) return "Risorsa esterna virtuale";
+
   if (status === "future") {
     const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
     return `Assunzione da W${String(startWeek).padStart(2, "0")}`;
@@ -686,6 +813,7 @@ function renderResourceItem(resource, status) {
   if (status === "partial") classes.push("resource-partial");
   if (status === "saturated") classes.push("resource-allocated");
   if (status === "history") classes.push("resource-history");
+  if (isExternalResource(resource)) classes.push("resource-history");
 
   const tooltip = getResourceTooltip(resource, status);
   const extra = getResourceShortInfo(resource, status);
@@ -730,7 +858,7 @@ function renderResourceLists() {
 
   const visibleAvailable = resourcesData.filter((resource) => {
     if (assignedIds.has(Number(resource.id))) return false;
-    if (!showInactive && !resource.is_active) return false;
+    if (!showInactive && !resource.is_active && !isExternalResource(resource)) return false;
     return matchesResourceSearch(resource, search);
   });
 
@@ -825,10 +953,15 @@ async function handleAvailableResourceDoubleClick(resourceId) {
   const resource = resourcesData.find((item) => Number(item.id) === Number(resourceId));
   if (!resource) return;
 
+  if (isExternalResource(resource)) {
+    await assignResourceToSelection(resourceId);
+    return;
+  }
+
   if (summary.week_from !== summary.week_to) {
     const demandRowSet = buildDemandRowSet(demandsData);
     const conflicts = getResourceAllocationsForSelectedWeeks(resourceId).filter((allocation) => {
-      const allocationRole = String(allocation.role || "").trim().toUpperCase();
+      const allocationRole = normalizeRole(allocation.role || "");
       const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
       return demandRowSet.has(rowKey);
     });
@@ -849,7 +982,7 @@ async function handleAvailableResourceDoubleClick(resourceId) {
   const week = summary.week_from;
   const demandRowSet = buildDemandRowSet(demandsData);
   const existing = getResourceAllocationsForWeek(resourceId, week).filter((allocation) => {
-    const allocationRole = String(allocation.role || "").trim().toUpperCase();
+    const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return demandRowSet.has(rowKey);
   });
@@ -1073,24 +1206,24 @@ async function removeResourceFromSelection(resourceId) {
 }
 
 function getCellAssignments(projectId, role, week) {
-  const normalizedRole = String(role || "").trim().toUpperCase();
+  const normalizedRole = normalizeRole(role);
 
   return allocationsData.filter((item) => {
     return (
       Number(item.project_id) === Number(projectId) &&
-      String(item.role || "").trim().toUpperCase() === normalizedRole &&
+      normalizeRole(item.role || "") === normalizedRole &&
       Number(item.week) === Number(week)
     );
   });
 }
 
 function getCellReleasedAssignments(projectId, role, week) {
-  const normalizedRole = String(role || "").trim().toUpperCase();
+  const normalizedRole = normalizeRole(role);
 
   return allocationHistoryData.filter((item) => {
     return (
       Number(item.project_id) === Number(projectId) &&
-      String(item.role || "").trim().toUpperCase() === normalizedRole &&
+      normalizeRole(item.role || "") === normalizedRole &&
       Number(item.week) === Number(week)
     );
   });
@@ -1104,14 +1237,14 @@ function buildCellCalloutHtml(projectName, role, week, assignments, released, de
   if (assignments.length) {
     parts.push(`<div class="cell-callout-section">Assegnati</div>`);
     assignments.forEach((item) => {
-      parts.push(`<div class="cell-callout-line">${escapeHtml(formatAssignmentLine(item, role))}</div>`);
+      parts.push(`<div class="cell-callout-line">${escapeHtml(formatAssignmentLine(item, role, week))}</div>`);
     });
   }
 
   if (released.length) {
     parts.push(`<div class="cell-callout-section">Non più conteggiati</div>`);
     released.forEach((item) => {
-      const line = `${formatAssignmentLine(item, role)} | ${item.reason || "storico"}`;
+      const line = `${formatAssignmentLine(item, role, week)} | ${item.reason || "storico"}`;
       parts.push(`<div class="cell-callout-line cell-callout-released">${escapeHtml(line)}</div>`);
     });
   }
@@ -1163,14 +1296,89 @@ function hideCellCallout() {
   if (existing) existing.remove();
 }
 
+function computeWeekTotals(rows, demandMap, allocationMaps) {
+  const totals = new Map();
+
+  WEEKS.forEach((week) => {
+    totals.set(week, {
+      week,
+      required: 0,
+      internalAllocated: 0,
+      externalAllocated: 0,
+      allocated: 0,
+      diff: 0,
+    });
+  });
+
+  rows.forEach((row) => {
+    WEEKS.forEach((week) => {
+      const key = `${row.project_id}__${row.role}__${week}`;
+      const required = demandMap.get(key) || 0;
+      const internalAllocated = allocationMaps.internalMap.get(key) || 0;
+      const externalAllocated = allocationMaps.externalMap.get(key) || 0;
+      const allocated = internalAllocated + externalAllocated;
+
+      const total = totals.get(week);
+      total.required += required;
+      total.internalAllocated += internalAllocated;
+      total.externalAllocated += externalAllocated;
+      total.allocated += allocated;
+      total.diff = total.required - total.allocated;
+    });
+  });
+
+  return totals;
+}
+
+function renderPlannerHeader(rows, demandMap, allocationMaps) {
+  const head = plannerHead || document.querySelector("thead");
+  if (!head) return;
+
+  const totals = computeWeekTotals(rows, demandMap, allocationMaps);
+
+  head.innerHTML = `
+    <tr class="planner-subtotals-row">
+      <th class="sticky-col planner-subtotals-label">Subtotali</th>
+      <th class="sticky-col second planner-subtotals-label">Vista</th>
+      <th class="sticky-col third planner-subtotals-label">Tot</th>
+      ${WEEKS.map((week) => {
+        const total = totals.get(week);
+        const allocatedDisplay = formatAllocatedDisplay(total.internalAllocated, total.externalAllocated);
+        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
+
+        return `
+          <th class="week-head week-subtotal-head${currentClass}" title="${getWeekRangeLabel(week)}">
+            <span class="metric">R${formatNumber(total.required)}</span>
+            <span class="metric">A${allocatedDisplay}</span>
+            <span class="metric">D${formatNumber(total.diff)}</span>
+          </th>
+        `;
+      }).join("")}
+    </tr>
+    <tr>
+      <th class="sticky-col">Commessa</th>
+      <th class="sticky-col second">Mansione</th>
+      <th class="sticky-col third">Cop.</th>
+      ${WEEKS.map((week) => {
+        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
+        return `<th class="week-head second-line${currentClass}" title="${getWeekRangeLabel(week)}">W${String(week).padStart(2, "0")}</th>`;
+      }).join("")}
+    </tr>
+  `;
+}
+
 function renderPlanner() {
   if (!plannerBody) return;
 
+  extSequenceMap = new Map();
+
   const demandMap = buildDemandMap(demandsData);
-  const allocationMap = buildAllocationMap(allocationsData, resourcesData);
+  const allocationMaps = buildAllocationMaps(allocationsData, resourcesData);
   const historyMap = buildHistoryMap(demandHistoryData);
   const allocationHistoryMap = buildHistoryMap(allocationHistoryData);
   const rows = buildPlannerRows(projectsData, demandsData);
+
+  renderPlannerHeader(rows, demandMap, allocationMaps);
 
   if (rows.length === 0) {
     plannerBody.innerHTML = `
@@ -1187,12 +1395,18 @@ function renderPlanner() {
   plannerBody.innerHTML = rows.map((row, rowIndex) => {
     let totalRequired = 0;
     let totalAllocated = 0;
+    let totalInternalAllocated = 0;
+    let totalExternalAllocated = 0;
 
     const weekCells = WEEKS.map((week) => {
       const key = `${row.project_id}__${row.role}__${week}`;
       const required = demandMap.get(key) || 0;
-      const allocated = allocationMap.get(key) || 0;
+      const internalAllocated = allocationMaps.internalMap.get(key) || 0;
+      const externalAllocated = allocationMaps.externalMap.get(key) || 0;
+      const allocated = internalAllocated + externalAllocated;
       const diff = required - allocated;
+      const allocatedDisplay = formatAllocatedDisplay(internalAllocated, externalAllocated);
+
       const historyRows = historyMap.get(key) || [];
       const releasedRows = allocationHistoryMap.get(key) || [];
       const hasHistory = historyRows.length > 0;
@@ -1201,6 +1415,8 @@ function renderPlanner() {
 
       totalRequired += required;
       totalAllocated += allocated;
+      totalInternalAllocated += internalAllocated;
+      totalExternalAllocated += externalAllocated;
 
       const calloutHtml = encodeURIComponent(
         buildCellCalloutHtml(row.project_name, row.role, week, assignments, releasedRows, historyRows)
@@ -1213,6 +1429,8 @@ function renderPlanner() {
         week,
         required,
         allocated,
+        internalAllocated,
+        externalAllocated,
         diff,
       }));
 
@@ -1225,7 +1443,7 @@ function renderPlanner() {
           data-week="${week}"
         >
           R${formatNumber(required)}<br>
-          A${formatNumber(allocated)}<br>
+          A${allocatedDisplay}<br>
           D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">↺</span>` : ""}
         </td>
       `;
@@ -1233,13 +1451,14 @@ function renderPlanner() {
 
     const coverageClass = getCoverageClass(totalRequired, totalAllocated);
     const percent = totalRequired > 0 ? Math.round((totalAllocated / totalRequired) * 100) : 100;
+    const totalAllocatedDisplay = formatAllocatedDisplay(totalInternalAllocated, totalExternalAllocated);
 
     return `
       <tr>
         <td class="sticky-col">${escapeHtml(row.project_name)}</td>
         <td class="sticky-col second">${escapeHtml(row.role)}</td>
         <td class="sticky-col third ${coverageClass}">
-          ${formatNumber(totalAllocated)}/${formatNumber(totalRequired)}<br>
+          ${totalAllocatedDisplay}/${formatNumber(totalRequired)}<br>
           <small>${percent}%</small>
         </td>
         ${weekCells}
