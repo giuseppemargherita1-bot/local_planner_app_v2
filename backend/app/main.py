@@ -19,6 +19,9 @@ app.add_middleware(
 )
 
 
+DEFAULT_YEAR_SHORT = 26
+
+
 class ResourceCreate(BaseModel):
     name: str
     role: str = ""
@@ -116,6 +119,36 @@ def normalize_role(value):
     return clean_text(value).upper()
 
 
+def period_key_from_week(week: int, year_short: int = DEFAULT_YEAR_SHORT):
+    week_int = int(week or 0)
+
+    if week_int >= 1000:
+        return week_int
+
+    return int(year_short) * 100 + week_int
+
+
+def week_from_period_key(period_key: int):
+    value = int(period_key or 0)
+
+    if value >= 1000:
+        return value % 100
+
+    return value
+
+
+def is_external_text(name: str = "", role: str = ""):
+    name_text = normalize_role(name)
+    role_text = normalize_role(role)
+
+    return (
+        "-EXT" in name_text
+        or name_text.endswith(" EXT")
+        or "-EXT" in role_text
+        or role_text.endswith(" EXT")
+    )
+
+
 def get_resource_or_none(conn, resource_id: int):
     return conn.execute(
         """
@@ -130,6 +163,9 @@ def get_resource_or_none(conn, resource_id: int):
 def resource_unavailable_reason(resource):
     if not resource:
         return "resource_not_found"
+
+    if is_external_text(resource["name"], resource["role"]):
+        return ""
 
     if int(resource["is_active"]) != 1:
         return "cessato"
@@ -150,6 +186,8 @@ def resource_is_unavailable(resource):
 
 
 def get_resource_week_allocations(conn, resource_id: int, week: int):
+    period_key = period_key_from_week(week)
+
     rows = conn.execute(
         """
         SELECT
@@ -162,6 +200,7 @@ def get_resource_week_allocations(conn, resource_id: int, week: int):
             a.project_id,
             p.name AS project_name,
             a.week,
+            a.period_key,
             a.role,
             a.hours,
             a.load_percent,
@@ -170,10 +209,10 @@ def get_resource_week_allocations(conn, resource_id: int, week: int):
         JOIN resources r ON r.id = a.resource_id
         JOIN projects p ON p.id = a.project_id
         WHERE a.resource_id = ?
-          AND a.week = ?
+          AND COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) = ?
         ORDER BY a.id ASC
         """,
-        (resource_id, week),
+        (resource_id, period_key),
     ).fetchall()
 
     return [dict(row) for row in rows]
@@ -190,6 +229,7 @@ def move_allocation_to_history(conn, allocation_id: int, reason: str, note: str 
             a.project_id,
             p.name AS project_name,
             a.week,
+            COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key,
             a.role,
             a.hours,
             a.load_percent,
@@ -215,13 +255,14 @@ def move_allocation_to_history(conn, allocation_id: int, reason: str, note: str 
             project_id,
             project_name,
             week,
+            period_key,
             role,
             hours,
             load_percent,
             reason,
             note
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             row["resource_id"],
@@ -230,6 +271,7 @@ def move_allocation_to_history(conn, allocation_id: int, reason: str, note: str 
             row["project_id"],
             row["project_name"],
             row["week"],
+            row["period_key"],
             row["role"],
             row["hours"],
             row["load_percent"],
@@ -265,15 +307,21 @@ def delete_allocation_to_history_best_effort(conn, allocation_id: int, reason: s
 
 
 def rebalance_resource_week(conn, resource_id: int, week: int):
+    resource = get_resource_or_none(conn, resource_id)
+    if resource and is_external_text(resource["name"], resource["role"]):
+        return {"count": 0, "load_percent": 100, "external": True}
+
+    period_key = period_key_from_week(week)
+
     rows = conn.execute(
         """
         SELECT id
         FROM allocations
         WHERE resource_id = ?
-          AND week = ?
+          AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
         ORDER BY id ASC
         """,
-        (resource_id, week),
+        (resource_id, period_key),
     ).fetchall()
 
     ids = [row["id"] for row in rows]
@@ -320,7 +368,7 @@ def rebalance_resource_week(conn, resource_id: int, week: int):
             conn,
             delete_id,
             "rimosso_extra",
-            "Rimosso perché la risorsa aveva più di 2 allocazioni nella stessa week",
+            "Rimosso perché la risorsa aveva più di 2 allocazioni nello stesso periodo",
         )
 
     return {
@@ -331,15 +379,18 @@ def rebalance_resource_week(conn, resource_id: int, week: int):
 
 
 def insert_allocation(conn, resource_id: int, project_id: int, week: int, role: str, hours: float, load_percent: float, note: str):
+    period_key = period_key_from_week(week)
+
     cursor = conn.execute(
         """
-        INSERT INTO allocations (resource_id, project_id, week, role, hours, load_percent, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO allocations (resource_id, project_id, week, period_key, role, hours, load_percent, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             resource_id,
             project_id,
-            week,
+            week_from_period_key(period_key),
+            period_key,
             normalize_role(role),
             hours,
             load_percent,
@@ -365,16 +416,18 @@ def demand_exists_for_project_role(conn, project_id: int, role: str):
 
 
 def get_demand_quantity(conn, project_id: int, role: str, week: int):
+    period_key = period_key_from_week(week)
+
     row = conn.execute(
         """
         SELECT quantity
         FROM demands
         WHERE project_id = ?
           AND UPPER(role) = ?
-          AND week = ?
+          AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
         LIMIT 1
         """,
-        (project_id, normalize_role(role), week),
+        (project_id, normalize_role(role), period_key),
     ).fetchone()
 
     if not row:
@@ -388,15 +441,17 @@ def release_allocations_for_zero_demand(conn, project_id: int, role: str, week: 
     if quantity > 0:
         return []
 
+    period_key = period_key_from_week(week)
+
     rows = conn.execute(
         """
         SELECT id, resource_id
         FROM allocations
         WHERE project_id = ?
           AND UPPER(role) = ?
-          AND week = ?
+          AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
         """,
-        (project_id, normalize_role(role), week),
+        (project_id, normalize_role(role), period_key),
     ).fetchall()
 
     released = []
@@ -424,6 +479,8 @@ def release_unavailable_allocations(conn):
             a.id,
             a.resource_id,
             a.week,
+            r.name,
+            r.role,
             r.is_active,
             r.availability_note
         FROM allocations a
@@ -435,6 +492,8 @@ def release_unavailable_allocations(conn):
 
     for row in rows:
         resource = {
+            "name": row["name"],
+            "role": row["role"],
             "is_active": row["is_active"],
             "availability_note": row["availability_note"],
         }
@@ -514,17 +573,15 @@ def cleanup_allocations(conn):
         SELECT
             resource_id,
             project_id,
-            week,
+            COALESCE(NULLIF(period_key, 0), 2600 + week) AS period_key,
             UPPER(role) AS role,
             COUNT(*) AS n,
             MIN(id) AS keep_id
         FROM allocations
-        GROUP BY resource_id, project_id, week, UPPER(role)
+        GROUP BY resource_id, project_id, COALESCE(NULLIF(period_key, 0), 2600 + week), UPPER(role)
         HAVING COUNT(*) > 1
         """
     ).fetchall()
-
-    touched = set()
 
     for duplicate in duplicate_rows:
         rows_to_remove = conn.execute(
@@ -533,7 +590,7 @@ def cleanup_allocations(conn):
             FROM allocations
             WHERE resource_id = ?
               AND project_id = ?
-              AND week = ?
+              AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
               AND UPPER(role) = ?
               AND id <> ?
             ORDER BY id ASC
@@ -541,7 +598,7 @@ def cleanup_allocations(conn):
             (
                 duplicate["resource_id"],
                 duplicate["project_id"],
-                duplicate["week"],
+                duplicate["period_key"],
                 duplicate["role"],
                 duplicate["keep_id"],
             ),
@@ -555,18 +612,27 @@ def cleanup_allocations(conn):
                 "Allocazione duplicata rimossa da pulizia dati",
             )
             stats["duplicate_removed"] += 1
-            touched.add((row["resource_id"], row["week"]))
 
-    resource_week_rows = conn.execute(
+    resource_period_rows = conn.execute(
         """
-        SELECT resource_id, week, COUNT(*) AS n
-        FROM allocations
-        GROUP BY resource_id, week
+        SELECT
+            a.resource_id,
+            COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key,
+            COUNT(*) AS n
+        FROM allocations a
+        JOIN resources r ON r.id = a.resource_id
+        WHERE UPPER(r.name) NOT LIKE '%-EXT%'
+          AND UPPER(r.name) NOT LIKE '% EXT'
+          AND UPPER(r.role) NOT LIKE '%-EXT%'
+          AND UPPER(r.role) NOT LIKE '% EXT'
+        GROUP BY a.resource_id, COALESCE(NULLIF(a.period_key, 0), 2600 + a.week)
         HAVING COUNT(*) > 2
         """
     ).fetchall()
 
-    for row in resource_week_rows:
+    for row in resource_period_rows:
+        week = week_from_period_key(row["period_key"])
+
         before_ids = [
             item["id"]
             for item in conn.execute(
@@ -574,14 +640,15 @@ def cleanup_allocations(conn):
                 SELECT id
                 FROM allocations
                 WHERE resource_id = ?
-                  AND week = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
                 ORDER BY id ASC
                 """,
-                (row["resource_id"], row["week"]),
+                (row["resource_id"], row["period_key"]),
             ).fetchall()
         ]
 
-        result = rebalance_resource_week(conn, row["resource_id"], row["week"])
+        rebalance_resource_week(conn, row["resource_id"], week)
+
         after_ids = [
             item["id"]
             for item in conn.execute(
@@ -589,26 +656,32 @@ def cleanup_allocations(conn):
                 SELECT id
                 FROM allocations
                 WHERE resource_id = ?
-                  AND week = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
                 ORDER BY id ASC
                 """,
-                (row["resource_id"], row["week"]),
+                (row["resource_id"], row["period_key"]),
             ).fetchall()
         ]
 
         stats["extra_over_2_removed"] += max(0, len(before_ids) - len(after_ids))
-        touched.add((row["resource_id"], row["week"]))
 
-    resource_week_all = conn.execute(
+    resource_period_all = conn.execute(
         """
-        SELECT resource_id, week
-        FROM allocations
-        GROUP BY resource_id, week
+        SELECT
+            a.resource_id,
+            COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key
+        FROM allocations a
+        JOIN resources r ON r.id = a.resource_id
+        WHERE UPPER(r.name) NOT LIKE '%-EXT%'
+          AND UPPER(r.name) NOT LIKE '% EXT'
+          AND UPPER(r.role) NOT LIKE '%-EXT%'
+          AND UPPER(r.role) NOT LIKE '% EXT'
+        GROUP BY a.resource_id, COALESCE(NULLIF(a.period_key, 0), 2600 + a.week)
         """
     ).fetchall()
 
-    for row in resource_week_all:
-        rebalance_resource_week(conn, row["resource_id"], row["week"])
+    for row in resource_period_all:
+        rebalance_resource_week(conn, row["resource_id"], week_from_period_key(row["period_key"]))
         stats["weeks_rebalanced"] += 1
 
     return stats
@@ -737,15 +810,24 @@ def list_demands():
                 d.project_id,
                 p.name AS project_name,
                 d.week,
+                COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
                 d.role,
                 d.quantity,
                 d.note
             FROM demands d
             JOIN projects p ON p.id = d.project_id
-            ORDER BY p.name ASC, d.role ASC, d.week ASC
+            ORDER BY p.name ASC, d.role ASC, period_key ASC, d.week ASC
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["period_key"] = int(item.get("period_key") or period_key_from_week(item.get("week")))
+            item["week"] = int(item.get("week") or week_from_period_key(item["period_key"]))
+            result.append(item)
+
+        return result
     finally:
         conn.close()
 
@@ -755,16 +837,18 @@ def create_demand(payload: DemandCreate):
     conn = get_connection()
     try:
         role = normalize_role(payload.role)
+        period_key = period_key_from_week(payload.week)
+        week = week_from_period_key(period_key)
 
         existing = conn.execute(
             """
             SELECT id, quantity
             FROM demands
             WHERE project_id = ?
-              AND week = ?
+              AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
               AND UPPER(role) = ?
             """,
-            (payload.project_id, payload.week, role),
+            (payload.project_id, period_key, role),
         ).fetchone()
 
         if existing:
@@ -774,13 +858,15 @@ def create_demand(payload: DemandCreate):
             conn.execute(
                 """
                 UPDATE demands
-                SET quantity = ?, note = ?, role = ?
+                SET quantity = ?, note = ?, role = ?, week = ?, period_key = ?
                 WHERE id = ?
                 """,
                 (
                     new_quantity,
                     clean_text(payload.note),
                     role,
+                    week,
+                    period_key,
                     existing["id"],
                 ),
             )
@@ -789,12 +875,13 @@ def create_demand(payload: DemandCreate):
                 conn.execute(
                     """
                     INSERT INTO demand_history
-                    (project_id, week, role, old_quantity, new_quantity, note)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (project_id, week, period_key, role, old_quantity, new_quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload.project_id,
-                        payload.week,
+                        week,
+                        period_key,
                         role,
                         old_quantity,
                         new_quantity,
@@ -806,12 +893,13 @@ def create_demand(payload: DemandCreate):
         else:
             cursor = conn.execute(
                 """
-                INSERT INTO demands (project_id, week, role, quantity, note)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO demands (project_id, week, period_key, role, quantity, note)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload.project_id,
-                    payload.week,
+                    week,
+                    period_key,
                     role,
                     payload.quantity,
                     clean_text(payload.note),
@@ -821,12 +909,13 @@ def create_demand(payload: DemandCreate):
             conn.execute(
                 """
                 INSERT INTO demand_history
-                (project_id, week, role, old_quantity, new_quantity, note)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (project_id, week, period_key, role, old_quantity, new_quantity, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     payload.project_id,
-                    payload.week,
+                    week,
+                    period_key,
                     role,
                     0,
                     payload.quantity,
@@ -836,7 +925,7 @@ def create_demand(payload: DemandCreate):
 
             demand_id = cursor.lastrowid
 
-        release_allocations_for_zero_demand(conn, payload.project_id, role, payload.week)
+        release_allocations_for_zero_demand(conn, payload.project_id, role, week)
         conn.commit()
 
         row = conn.execute(
@@ -846,6 +935,7 @@ def create_demand(payload: DemandCreate):
                 d.project_id,
                 p.name AS project_name,
                 d.week,
+                COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
                 d.role,
                 d.quantity,
                 d.note
@@ -874,13 +964,17 @@ def upsert_demand_range(payload: DemandRangeUpsert):
         week_to = max(payload.week_from, payload.week_to)
 
         for week in range(week_from, week_to + 1):
+            period_key = period_key_from_week(week)
+
             existing = conn.execute(
                 """
                 SELECT id, quantity
                 FROM demands
-                WHERE project_id = ? AND week = ? AND UPPER(role) = ?
+                WHERE project_id = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                  AND UPPER(role) = ?
                 """,
-                (payload.project_id, week, role),
+                (payload.project_id, period_key, role),
             ).fetchone()
 
             if existing:
@@ -890,10 +984,10 @@ def upsert_demand_range(payload: DemandRangeUpsert):
                 conn.execute(
                     """
                     UPDATE demands
-                    SET quantity = ?, note = ?, role = ?
+                    SET quantity = ?, note = ?, role = ?, week = ?, period_key = ?
                     WHERE id = ?
                     """,
-                    (new_quantity, note, role, existing["id"]),
+                    (new_quantity, note, role, week, period_key, existing["id"]),
                 )
                 updated_ids.append(existing["id"])
 
@@ -901,12 +995,13 @@ def upsert_demand_range(payload: DemandRangeUpsert):
                     conn.execute(
                         """
                         INSERT INTO demand_history
-                        (project_id, week, role, old_quantity, new_quantity, note)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                        (project_id, week, period_key, role, old_quantity, new_quantity, note)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             payload.project_id,
                             week,
+                            period_key,
                             role,
                             old_quantity,
                             new_quantity,
@@ -916,22 +1011,23 @@ def upsert_demand_range(payload: DemandRangeUpsert):
             else:
                 cursor = conn.execute(
                     """
-                    INSERT INTO demands (project_id, week, role, quantity, note)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO demands (project_id, week, period_key, role, quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (payload.project_id, week, role, payload.quantity, note),
+                    (payload.project_id, week, period_key, role, payload.quantity, note),
                 )
                 updated_ids.append(cursor.lastrowid)
 
                 conn.execute(
                     """
                     INSERT INTO demand_history
-                    (project_id, week, role, old_quantity, new_quantity, note)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (project_id, week, period_key, role, old_quantity, new_quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload.project_id,
                         week,
+                        period_key,
                         role,
                         0,
                         payload.quantity,
@@ -954,13 +1050,14 @@ def upsert_demand_range(payload: DemandRangeUpsert):
                     d.project_id,
                     p.name AS project_name,
                     d.week,
+                    COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
                     d.role,
                     d.quantity,
                     d.note
                 FROM demands d
                 JOIN projects p ON p.id = d.project_id
                 WHERE d.id IN ({",".join(["?"] * len(updated_ids))})
-                ORDER BY d.week ASC
+                ORDER BY period_key ASC, d.week ASC
                 """,
                 updated_ids,
             ).fetchall()
@@ -986,6 +1083,7 @@ def list_demand_history():
                 h.project_id,
                 p.name AS project_name,
                 h.week,
+                COALESCE(NULLIF(h.period_key, 0), 2600 + h.week) AS period_key,
                 h.role,
                 h.old_quantity,
                 h.new_quantity,
@@ -996,7 +1094,15 @@ def list_demand_history():
             ORDER BY h.created_at DESC, h.id DESC
             """
         ).fetchall()
-        return [dict(row) for row in rows]
+
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["period_key"] = int(item.get("period_key") or period_key_from_week(item.get("week")))
+            item["week"] = int(item.get("week") or week_from_period_key(item["period_key"]))
+            result.append(item)
+
+        return result
     finally:
         conn.close()
 
@@ -1020,6 +1126,7 @@ def list_allocations():
                 a.project_id,
                 p.name AS project_name,
                 a.week,
+                COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key,
                 a.role,
                 a.hours,
                 a.load_percent,
@@ -1027,7 +1134,7 @@ def list_allocations():
             FROM allocations a
             JOIN resources r ON r.id = a.resource_id
             JOIN projects p ON p.id = a.project_id
-            ORDER BY p.name ASC, a.week ASC, r.name ASC
+            ORDER BY p.name ASC, period_key ASC, a.week ASC, r.name ASC
             """
         ).fetchall()
 
@@ -1037,6 +1144,8 @@ def list_allocations():
             item["role"] = normalize_role(item.get("role"))
             item["resource_role"] = normalize_role(item.get("resource_role"))
             item["load_percent"] = float(item.get("load_percent") or 0)
+            item["period_key"] = int(item.get("period_key") or period_key_from_week(item.get("week")))
+            item["week"] = int(item.get("week") or week_from_period_key(item["period_key"]))
             cleaned_rows.append(item)
 
         return cleaned_rows
@@ -1058,6 +1167,7 @@ def list_allocation_history():
                 project_id,
                 project_name,
                 week,
+                COALESCE(NULLIF(period_key, 0), 2600 + week) AS period_key,
                 role,
                 hours,
                 load_percent,
@@ -1075,6 +1185,8 @@ def list_allocation_history():
             item["role"] = normalize_role(item.get("role"))
             item["resource_role"] = normalize_role(item.get("resource_role"))
             item["load_percent"] = float(item.get("load_percent") or 0)
+            item["period_key"] = int(item.get("period_key") or period_key_from_week(item.get("week")))
+            item["week"] = int(item.get("week") or week_from_period_key(item["period_key"]))
             cleaned_rows.append(item)
 
         return cleaned_rows
@@ -1106,9 +1218,12 @@ def create_allocation(payload: AllocationCreate):
                 "message": "Prima crea/attiva il fabbisogno per questa commessa e mansione.",
             }
 
+        resource = get_resource_or_none(conn, payload.resource_id)
+        is_external = resource and is_external_text(resource["name"], resource["role"])
+
         existing_week = get_resource_week_allocations(conn, payload.resource_id, payload.week)
 
-        if len(existing_week) > 0:
+        if len(existing_week) > 0 and not is_external:
             return {
                 "created": False,
                 "reason": "resource_already_allocated_this_week",
@@ -1126,7 +1241,9 @@ def create_allocation(payload: AllocationCreate):
             payload.note,
         )
 
-        rebalance_resource_week(conn, payload.resource_id, payload.week)
+        if not is_external:
+            rebalance_resource_week(conn, payload.resource_id, payload.week)
+
         conn.commit()
 
         return {
@@ -1174,26 +1291,28 @@ def assign_allocation_range(payload: AllocationRangePayload):
                 "conflicts": [],
             }
 
-        is_external = "-EXT" in normalize_role(resource["name"]) or " EXT" in normalize_role(resource["name"]) or "-EXT" in normalize_role(resource["role"]) or " EXT" in normalize_role(resource["role"])
+        is_external = is_external_text(resource["name"], resource["role"])
 
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
 
         for week in range(week_from, week_to + 1):
+            period_key = period_key_from_week(week)
+
             existing_same_cell = conn.execute(
                 """
                 SELECT id
                 FROM allocations
                 WHERE resource_id = ?
                   AND project_id = ?
-                  AND week = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
                   AND UPPER(role) = ?
                 """,
-                (payload.resource_id, payload.project_id, week, role),
+                (payload.resource_id, payload.project_id, period_key, role),
             ).fetchone()
 
             if existing_same_cell and not is_external:
-                skipped.append({"week": week, "reason": "already_assigned_on_this_cell"})
+                skipped.append({"week": week, "period_key": period_key, "reason": "already_assigned_on_this_cell"})
                 rebalance_resource_week(conn, payload.resource_id, week)
                 continue
 
@@ -1202,9 +1321,10 @@ def assign_allocation_range(payload: AllocationRangePayload):
             if existing_week and not is_external:
                 conflicts.append({
                     "week": week,
+                    "period_key": period_key,
                     "existing": existing_week,
                 })
-                skipped.append({"week": week, "reason": "resource_already_allocated_this_week"})
+                skipped.append({"week": week, "period_key": period_key, "reason": "resource_already_allocated_this_week"})
                 continue
 
             new_id = insert_allocation(
@@ -1240,6 +1360,7 @@ def resolve_allocation_conflict(payload: AllocationResolvePayload):
     try:
         role = normalize_role(payload.role)
         mode = clean_text(payload.mode).lower()
+        period_key = period_key_from_week(payload.week)
 
         if not demand_exists_for_project_role(conn, payload.project_id, role):
             return {
@@ -1256,7 +1377,7 @@ def resolve_allocation_conflict(payload: AllocationResolvePayload):
         if resource_is_unavailable(resource):
             return {"ok": False, "reason": "resource_unavailable"}
 
-        is_external = "-EXT" in normalize_role(resource["name"]) or " EXT" in normalize_role(resource["name"]) or "-EXT" in normalize_role(resource["role"]) or " EXT" in normalize_role(resource["role"])
+        is_external = is_external_text(resource["name"], resource["role"])
 
         if is_external:
             new_id = insert_allocation(
@@ -1275,7 +1396,9 @@ def resolve_allocation_conflict(payload: AllocationResolvePayload):
         existing_week = get_resource_week_allocations(conn, payload.resource_id, payload.week)
 
         already_same_cell = any(
-            item["project_id"] == payload.project_id and normalize_role(item["role"]) == role
+            item["project_id"] == payload.project_id
+            and normalize_role(item["role"]) == role
+            and int(item.get("period_key") or period_key_from_week(item["week"])) == period_key
             for item in existing_week
         )
 
@@ -1417,6 +1540,9 @@ def remove_allocation_range(payload: AllocationRangePayload):
         week_to = max(payload.week_from, payload.week_to)
         touched_weeks = []
 
+        period_from = period_key_from_week(week_from)
+        period_to = period_key_from_week(week_to)
+
         rows = conn.execute(
             """
             SELECT id, week
@@ -1424,14 +1550,14 @@ def remove_allocation_range(payload: AllocationRangePayload):
             WHERE resource_id = ?
               AND project_id = ?
               AND UPPER(role) = ?
-              AND week BETWEEN ? AND ?
+              AND COALESCE(NULLIF(period_key, 0), 2600 + week) BETWEEN ? AND ?
             """,
             (
                 payload.resource_id,
                 payload.project_id,
                 role,
-                week_from,
-                week_to,
+                period_from,
+                period_to,
             ),
         ).fetchall()
 
