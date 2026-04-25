@@ -5,7 +5,6 @@ const sideInnerSplitter = document.getElementById("sideInnerSplitter");
 const plannerGridWrap = document.getElementById("plannerGridWrap");
 const plannerBody = document.getElementById("plannerBody");
 
-const plannerTable = document.querySelector(".planner-table") || document.querySelector("table");
 const plannerHead = document.querySelector("thead");
 
 const selectionBox = document.getElementById("selectionBox");
@@ -49,7 +48,6 @@ let demandHistoryData = [];
 let rowMetaMap = new Map();
 let selectedCells = [];
 let activeMode = "demand";
-
 let extSequenceMap = new Map();
 
 function clamp(value, min, max) {
@@ -456,12 +454,14 @@ function getCoverageClass(required, allocated) {
 function getCellClass(required, allocated, week, hasHistory, hasAllocationHistory) {
   let cls = "cell-empty planner-cell-clickable";
 
-  if (required > 0 && allocated >= required) {
+  if (required > 0 && allocated < required) {
+    cls = "cell-demand planner-cell-clickable";
+  } else if (required > 0 && allocated === required) {
     cls = "cell-ok planner-cell-clickable";
-  } else if (required > 0 && allocated < required) {
-    cls = "cell-demand planner-cell-clickable";
+  } else if (required > 0 && allocated > required) {
+    cls = "cell-surplus planner-cell-clickable";
   } else if (required === 0 && allocated > 0) {
-    cls = "cell-demand planner-cell-clickable";
+    cls = "cell-surplus planner-cell-clickable";
   }
 
   if (week === CURRENT_WEEK) cls += " current-col";
@@ -879,7 +879,7 @@ function renderResourceLists() {
 
   availableResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
     item.addEventListener("dblclick", async () => {
-      const status = item.dataset.resourceStatus;
+      const status = item.datasetResourceStatus || item.dataset.resourceStatus;
       if (status === "inactive" || status === "unavailable" || status === "future") return;
 
       const resourceId = Number(item.dataset.resourceId);
@@ -1217,18 +1217,6 @@ function getCellAssignments(projectId, role, week) {
   });
 }
 
-function getCellReleasedAssignments(projectId, role, week) {
-  const normalizedRole = normalizeRole(role);
-
-  return allocationHistoryData.filter((item) => {
-    return (
-      Number(item.project_id) === Number(projectId) &&
-      normalizeRole(item.role || "") === normalizedRole &&
-      Number(item.week) === Number(week)
-    );
-  });
-}
-
 function buildCellCalloutHtml(projectName, role, week, assignments, released, demandHistoryRows) {
   const parts = [];
 
@@ -1342,9 +1330,14 @@ function renderPlannerHeader(rows, demandMap, allocationMaps) {
       <th class="sticky-col second planner-subtotals-label">Vista</th>
       <th class="sticky-col third planner-subtotals-label">Tot</th>
       ${WEEKS.map((week) => {
+        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
+
+        if (week < CURRENT_WEEK) {
+          return `<th class="week-head week-subtotal-head week-subtotal-past${currentClass}" title="${getWeekRangeLabel(week)}"></th>`;
+        }
+
         const total = totals.get(week);
         const allocatedDisplay = formatAllocatedDisplay(total.internalAllocated, total.externalAllocated);
-        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
 
         return `
           <th class="week-head week-subtotal-head${currentClass}" title="${getWeekRangeLabel(week)}">

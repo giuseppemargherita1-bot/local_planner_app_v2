@@ -108,6 +108,14 @@ def info():
     }
 
 
+def clean_text(value):
+    return str(value or "").strip()
+
+
+def normalize_role(value):
+    return clean_text(value).upper()
+
+
 def get_resource_or_none(conn, resource_id: int):
     return conn.execute(
         """
@@ -169,120 +177,6 @@ def get_resource_week_allocations(conn, resource_id: int, week: int):
     ).fetchall()
 
     return [dict(row) for row in rows]
-
-
-def rebalance_resource_week(conn, resource_id: int, week: int):
-    rows = conn.execute(
-        """
-        SELECT id
-        FROM allocations
-        WHERE resource_id = ?
-          AND week = ?
-        ORDER BY id ASC
-        """,
-        (resource_id, week),
-    ).fetchall()
-
-    ids = [row["id"] for row in rows]
-
-    if len(ids) == 0:
-        return {"count": 0, "load_percent": 0}
-
-    if len(ids) == 1:
-        conn.execute(
-            """
-            UPDATE allocations
-            SET load_percent = 100
-            WHERE id = ?
-            """,
-            (ids[0],),
-        )
-        return {"count": 1, "load_percent": 100}
-
-    if len(ids) == 2:
-        conn.execute(
-            f"""
-            UPDATE allocations
-            SET load_percent = 50
-            WHERE id IN ({",".join(["?"] * len(ids))})
-            """,
-            ids,
-        )
-        return {"count": 2, "load_percent": 50}
-
-    keep_ids = ids[:2]
-    delete_ids = ids[2:]
-
-    conn.execute(
-        f"""
-        UPDATE allocations
-        SET load_percent = 50
-        WHERE id IN ({",".join(["?"] * len(keep_ids))})
-        """,
-        keep_ids,
-    )
-
-    for delete_id in delete_ids:
-        move_allocation_to_history(conn, delete_id, "rimosso_extra", "Rimosso perché la risorsa aveva più di 2 allocazioni nella stessa week")
-
-    return {
-        "count": 2,
-        "load_percent": 50,
-        "deleted_ids": delete_ids,
-    }
-
-
-def insert_allocation(conn, resource_id: int, project_id: int, week: int, role: str, hours: float, load_percent: float, note: str):
-    cursor = conn.execute(
-        """
-        INSERT INTO allocations (resource_id, project_id, week, role, hours, load_percent, note)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            resource_id,
-            project_id,
-            week,
-            role.strip().upper(),
-            hours,
-            load_percent,
-            note.strip(),
-        ),
-    )
-    return cursor.lastrowid
-
-
-def demand_exists_for_project_role(conn, project_id: int, role: str):
-    row = conn.execute(
-        """
-        SELECT id
-        FROM demands
-        WHERE project_id = ?
-          AND UPPER(role) = ?
-        LIMIT 1
-        """,
-        (project_id, role.strip().upper()),
-    ).fetchone()
-
-    return row is not None
-
-
-def get_demand_quantity(conn, project_id: int, role: str, week: int):
-    row = conn.execute(
-        """
-        SELECT quantity
-        FROM demands
-        WHERE project_id = ?
-          AND UPPER(role) = ?
-          AND week = ?
-        LIMIT 1
-        """,
-        (project_id, role.strip().upper(), week),
-    ).fetchone()
-
-    if not row:
-        return 0
-
-    return float(row["quantity"] or 0)
 
 
 def move_allocation_to_history(conn, allocation_id: int, reason: str, note: str = ""):
@@ -355,6 +249,140 @@ def move_allocation_to_history(conn, allocation_id: int, reason: str, note: str 
     return True
 
 
+def delete_allocation_to_history_best_effort(conn, allocation_id: int, reason: str, note: str = ""):
+    ok = move_allocation_to_history(conn, allocation_id, reason, note)
+    if ok:
+        return "historized"
+
+    conn.execute(
+        """
+        DELETE FROM allocations
+        WHERE id = ?
+        """,
+        (allocation_id,),
+    )
+    return "deleted"
+
+
+def rebalance_resource_week(conn, resource_id: int, week: int):
+    rows = conn.execute(
+        """
+        SELECT id
+        FROM allocations
+        WHERE resource_id = ?
+          AND week = ?
+        ORDER BY id ASC
+        """,
+        (resource_id, week),
+    ).fetchall()
+
+    ids = [row["id"] for row in rows]
+
+    if len(ids) == 0:
+        return {"count": 0, "load_percent": 0}
+
+    if len(ids) == 1:
+        conn.execute(
+            """
+            UPDATE allocations
+            SET load_percent = 100
+            WHERE id = ?
+            """,
+            (ids[0],),
+        )
+        return {"count": 1, "load_percent": 100}
+
+    if len(ids) == 2:
+        conn.execute(
+            f"""
+            UPDATE allocations
+            SET load_percent = 50
+            WHERE id IN ({",".join(["?"] * len(ids))})
+            """,
+            ids,
+        )
+        return {"count": 2, "load_percent": 50}
+
+    keep_ids = ids[:2]
+    delete_ids = ids[2:]
+
+    conn.execute(
+        f"""
+        UPDATE allocations
+        SET load_percent = 50
+        WHERE id IN ({",".join(["?"] * len(keep_ids))})
+        """,
+        keep_ids,
+    )
+
+    for delete_id in delete_ids:
+        delete_allocation_to_history_best_effort(
+            conn,
+            delete_id,
+            "rimosso_extra",
+            "Rimosso perché la risorsa aveva più di 2 allocazioni nella stessa week",
+        )
+
+    return {
+        "count": 2,
+        "load_percent": 50,
+        "deleted_ids": delete_ids,
+    }
+
+
+def insert_allocation(conn, resource_id: int, project_id: int, week: int, role: str, hours: float, load_percent: float, note: str):
+    cursor = conn.execute(
+        """
+        INSERT INTO allocations (resource_id, project_id, week, role, hours, load_percent, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            resource_id,
+            project_id,
+            week,
+            normalize_role(role),
+            hours,
+            load_percent,
+            clean_text(note),
+        ),
+    )
+    return cursor.lastrowid
+
+
+def demand_exists_for_project_role(conn, project_id: int, role: str):
+    row = conn.execute(
+        """
+        SELECT id
+        FROM demands
+        WHERE project_id = ?
+          AND UPPER(role) = ?
+        LIMIT 1
+        """,
+        (project_id, normalize_role(role)),
+    ).fetchone()
+
+    return row is not None
+
+
+def get_demand_quantity(conn, project_id: int, role: str, week: int):
+    row = conn.execute(
+        """
+        SELECT quantity
+        FROM demands
+        WHERE project_id = ?
+          AND UPPER(role) = ?
+          AND week = ?
+        LIMIT 1
+        """,
+        (project_id, normalize_role(role), week),
+    ).fetchone()
+
+    if not row:
+        return 0
+
+    return float(row["quantity"] or 0)
+
+
 def release_allocations_for_zero_demand(conn, project_id: int, role: str, week: int):
     quantity = get_demand_quantity(conn, project_id, role, week)
     if quantity > 0:
@@ -368,7 +396,7 @@ def release_allocations_for_zero_demand(conn, project_id: int, role: str, week: 
           AND UPPER(role) = ?
           AND week = ?
         """,
-        (project_id, role.strip().upper(), week),
+        (project_id, normalize_role(role), week),
     ).fetchall()
 
     released = []
@@ -425,6 +453,181 @@ def release_unavailable_allocations(conn):
     return released
 
 
+def cleanup_allocations(conn):
+    stats = {
+        "orphan_resource_deleted": 0,
+        "orphan_project_deleted": 0,
+        "role_normalized": 0,
+        "duplicate_removed": 0,
+        "extra_over_2_removed": 0,
+        "weeks_rebalanced": 0,
+    }
+
+    orphan_resource_rows = conn.execute(
+        """
+        SELECT a.id
+        FROM allocations a
+        LEFT JOIN resources r ON r.id = a.resource_id
+        WHERE r.id IS NULL
+        """
+    ).fetchall()
+
+    for row in orphan_resource_rows:
+        conn.execute("DELETE FROM allocations WHERE id = ?", (row["id"],))
+        stats["orphan_resource_deleted"] += 1
+
+    orphan_project_rows = conn.execute(
+        """
+        SELECT a.id
+        FROM allocations a
+        LEFT JOIN projects p ON p.id = a.project_id
+        WHERE p.id IS NULL
+        """
+    ).fetchall()
+
+    for row in orphan_project_rows:
+        conn.execute("DELETE FROM allocations WHERE id = ?", (row["id"],))
+        stats["orphan_project_deleted"] += 1
+
+    rows = conn.execute(
+        """
+        SELECT id, role
+        FROM allocations
+        """
+    ).fetchall()
+
+    for row in rows:
+        normalized = normalize_role(row["role"])
+        if row["role"] != normalized:
+            conn.execute(
+                """
+                UPDATE allocations
+                SET role = ?
+                WHERE id = ?
+                """,
+                (normalized, row["id"]),
+            )
+            stats["role_normalized"] += 1
+
+    duplicate_rows = conn.execute(
+        """
+        SELECT
+            resource_id,
+            project_id,
+            week,
+            UPPER(role) AS role,
+            COUNT(*) AS n,
+            MIN(id) AS keep_id
+        FROM allocations
+        GROUP BY resource_id, project_id, week, UPPER(role)
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+
+    touched = set()
+
+    for duplicate in duplicate_rows:
+        rows_to_remove = conn.execute(
+            """
+            SELECT id, resource_id, week
+            FROM allocations
+            WHERE resource_id = ?
+              AND project_id = ?
+              AND week = ?
+              AND UPPER(role) = ?
+              AND id <> ?
+            ORDER BY id ASC
+            """,
+            (
+                duplicate["resource_id"],
+                duplicate["project_id"],
+                duplicate["week"],
+                duplicate["role"],
+                duplicate["keep_id"],
+            ),
+        ).fetchall()
+
+        for row in rows_to_remove:
+            delete_allocation_to_history_best_effort(
+                conn,
+                row["id"],
+                "duplicato",
+                "Allocazione duplicata rimossa da pulizia dati",
+            )
+            stats["duplicate_removed"] += 1
+            touched.add((row["resource_id"], row["week"]))
+
+    resource_week_rows = conn.execute(
+        """
+        SELECT resource_id, week, COUNT(*) AS n
+        FROM allocations
+        GROUP BY resource_id, week
+        HAVING COUNT(*) > 2
+        """
+    ).fetchall()
+
+    for row in resource_week_rows:
+        before_ids = [
+            item["id"]
+            for item in conn.execute(
+                """
+                SELECT id
+                FROM allocations
+                WHERE resource_id = ?
+                  AND week = ?
+                ORDER BY id ASC
+                """,
+                (row["resource_id"], row["week"]),
+            ).fetchall()
+        ]
+
+        result = rebalance_resource_week(conn, row["resource_id"], row["week"])
+        after_ids = [
+            item["id"]
+            for item in conn.execute(
+                """
+                SELECT id
+                FROM allocations
+                WHERE resource_id = ?
+                  AND week = ?
+                ORDER BY id ASC
+                """,
+                (row["resource_id"], row["week"]),
+            ).fetchall()
+        ]
+
+        stats["extra_over_2_removed"] += max(0, len(before_ids) - len(after_ids))
+        touched.add((row["resource_id"], row["week"]))
+
+    resource_week_all = conn.execute(
+        """
+        SELECT resource_id, week
+        FROM allocations
+        GROUP BY resource_id, week
+        """
+    ).fetchall()
+
+    for row in resource_week_all:
+        rebalance_resource_week(conn, row["resource_id"], row["week"])
+        stats["weeks_rebalanced"] += 1
+
+    return stats
+
+
+@app.post("/api/admin/cleanup-allocations")
+def admin_cleanup_allocations():
+    conn = get_connection()
+    try:
+        stats = cleanup_allocations(conn)
+        conn.commit()
+        return {
+            "ok": True,
+            "stats": stats,
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/api/resources")
 def list_resources():
     conn = get_connection()
@@ -451,9 +654,9 @@ def create_resource(payload: ResourceCreate):
             VALUES (?, ?, ?, ?)
             """,
             (
-                payload.name.strip(),
-                payload.role.strip().upper(),
-                payload.availability_note.strip(),
+                clean_text(payload.name),
+                normalize_role(payload.role),
+                clean_text(payload.availability_note),
                 int(payload.is_active),
             )
         )
@@ -499,12 +702,12 @@ def create_project(payload: ProjectCreate):
             VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
-                payload.name.strip(),
-                payload.client.strip(),
-                payload.start_date.strip(),
-                payload.end_date.strip(),
-                payload.status.strip(),
-                payload.note.strip(),
+                clean_text(payload.name),
+                clean_text(payload.client),
+                clean_text(payload.start_date),
+                clean_text(payload.end_date),
+                clean_text(payload.status),
+                clean_text(payload.note),
             )
         )
         conn.commit()
@@ -551,7 +754,7 @@ def list_demands():
 def create_demand(payload: DemandCreate):
     conn = get_connection()
     try:
-        role = payload.role.strip().upper()
+        role = normalize_role(payload.role)
 
         existing = conn.execute(
             """
@@ -576,7 +779,7 @@ def create_demand(payload: DemandCreate):
                 """,
                 (
                     new_quantity,
-                    payload.note.strip(),
+                    clean_text(payload.note),
                     role,
                     existing["id"],
                 ),
@@ -611,7 +814,7 @@ def create_demand(payload: DemandCreate):
                     payload.week,
                     role,
                     payload.quantity,
-                    payload.note.strip(),
+                    clean_text(payload.note),
                 )
             )
 
@@ -665,8 +868,8 @@ def upsert_demand_range(payload: DemandRangeUpsert):
     released_ids = []
 
     try:
-        role = payload.role.strip().upper()
-        note = payload.note.strip()
+        role = normalize_role(payload.role)
+        note = clean_text(payload.note)
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
 
@@ -742,23 +945,25 @@ def upsert_demand_range(payload: DemandRangeUpsert):
 
         conn.commit()
 
-        rows = conn.execute(
-            f"""
-            SELECT
-                d.id,
-                d.project_id,
-                p.name AS project_name,
-                d.week,
-                d.role,
-                d.quantity,
-                d.note
-            FROM demands d
-            JOIN projects p ON p.id = d.project_id
-            WHERE d.id IN ({",".join(["?"] * len(updated_ids))})
-            ORDER BY d.week ASC
-            """,
-            updated_ids,
-        ).fetchall()
+        rows = []
+        if updated_ids:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    d.id,
+                    d.project_id,
+                    p.name AS project_name,
+                    d.week,
+                    d.role,
+                    d.quantity,
+                    d.note
+                FROM demands d
+                JOIN projects p ON p.id = d.project_id
+                WHERE d.id IN ({",".join(["?"] * len(updated_ids))})
+                ORDER BY d.week ASC
+                """,
+                updated_ids,
+            ).fetchall()
 
         return {
             "updated_count": len(updated_ids),
@@ -829,8 +1034,8 @@ def list_allocations():
         cleaned_rows = []
         for row in rows:
             item = dict(row)
-            item["role"] = str(item.get("role") or "").upper()
-            item["resource_role"] = str(item.get("resource_role") or "").upper()
+            item["role"] = normalize_role(item.get("role"))
+            item["resource_role"] = normalize_role(item.get("resource_role"))
             item["load_percent"] = float(item.get("load_percent") or 0)
             cleaned_rows.append(item)
 
@@ -867,8 +1072,8 @@ def list_allocation_history():
         cleaned_rows = []
         for row in rows:
             item = dict(row)
-            item["role"] = str(item.get("role") or "").upper()
-            item["resource_role"] = str(item.get("resource_role") or "").upper()
+            item["role"] = normalize_role(item.get("role"))
+            item["resource_role"] = normalize_role(item.get("resource_role"))
             item["load_percent"] = float(item.get("load_percent") or 0)
             cleaned_rows.append(item)
 
@@ -881,7 +1086,7 @@ def list_allocation_history():
 def create_allocation(payload: AllocationCreate):
     conn = get_connection()
     try:
-        role = payload.role.strip().upper()
+        role = normalize_role(payload.role)
 
         if not role:
             resource = conn.execute(
@@ -892,7 +1097,7 @@ def create_allocation(payload: AllocationCreate):
                 """,
                 (payload.resource_id,),
             ).fetchone()
-            role = str(resource["role"] or "").strip().upper() if resource else ""
+            role = normalize_role(resource["role"]) if resource else ""
 
         if not demand_exists_for_project_role(conn, payload.project_id, role):
             return {
@@ -940,7 +1145,7 @@ def assign_allocation_range(payload: AllocationRangePayload):
     conflicts = []
 
     try:
-        role = payload.role.strip().upper()
+        role = normalize_role(payload.role)
 
         if not demand_exists_for_project_role(conn, payload.project_id, role):
             return {
@@ -969,6 +1174,8 @@ def assign_allocation_range(payload: AllocationRangePayload):
                 "conflicts": [],
             }
 
+        is_external = "-EXT" in normalize_role(resource["name"]) or " EXT" in normalize_role(resource["name"]) or "-EXT" in normalize_role(resource["role"]) or " EXT" in normalize_role(resource["role"])
+
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
 
@@ -985,14 +1192,14 @@ def assign_allocation_range(payload: AllocationRangePayload):
                 (payload.resource_id, payload.project_id, week, role),
             ).fetchone()
 
-            if existing_same_cell:
+            if existing_same_cell and not is_external:
                 skipped.append({"week": week, "reason": "already_assigned_on_this_cell"})
                 rebalance_resource_week(conn, payload.resource_id, week)
                 continue
 
             existing_week = get_resource_week_allocations(conn, payload.resource_id, week)
 
-            if existing_week:
+            if existing_week and not is_external:
                 conflicts.append({
                     "week": week,
                     "existing": existing_week,
@@ -1011,7 +1218,9 @@ def assign_allocation_range(payload: AllocationRangePayload):
                 payload.note,
             )
             created_ids.append(new_id)
-            rebalance_resource_week(conn, payload.resource_id, week)
+
+            if not is_external:
+                rebalance_resource_week(conn, payload.resource_id, week)
 
         conn.commit()
 
@@ -1029,8 +1238,8 @@ def assign_allocation_range(payload: AllocationRangePayload):
 def resolve_allocation_conflict(payload: AllocationResolvePayload):
     conn = get_connection()
     try:
-        role = payload.role.strip().upper()
-        mode = payload.mode.strip().lower()
+        role = normalize_role(payload.role)
+        mode = clean_text(payload.mode).lower()
 
         if not demand_exists_for_project_role(conn, payload.project_id, role):
             return {
@@ -1047,10 +1256,26 @@ def resolve_allocation_conflict(payload: AllocationResolvePayload):
         if resource_is_unavailable(resource):
             return {"ok": False, "reason": "resource_unavailable"}
 
+        is_external = "-EXT" in normalize_role(resource["name"]) or " EXT" in normalize_role(resource["name"]) or "-EXT" in normalize_role(resource["role"]) or " EXT" in normalize_role(resource["role"])
+
+        if is_external:
+            new_id = insert_allocation(
+                conn,
+                payload.resource_id,
+                payload.project_id,
+                payload.week,
+                role,
+                payload.hours,
+                100,
+                payload.note,
+            )
+            conn.commit()
+            return {"ok": True, "mode": "external_direct", "created_id": new_id}
+
         existing_week = get_resource_week_allocations(conn, payload.resource_id, payload.week)
 
         already_same_cell = any(
-            item["project_id"] == payload.project_id and str(item["role"]).upper() == role
+            item["project_id"] == payload.project_id and normalize_role(item["role"]) == role
             for item in existing_week
         )
 
@@ -1187,7 +1412,7 @@ def remove_allocation_range(payload: AllocationRangePayload):
     removed_ids = []
 
     try:
-        role = payload.role.strip().upper()
+        role = normalize_role(payload.role)
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
         touched_weeks = []

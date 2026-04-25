@@ -817,3 +817,708 @@ body {
   font-size: 9px !important;
   line-height: 1 !important;
 }
+/* =========================================================
+   OVERRIDE FINALE PLANNER V2
+   Header compatto, sticky corretto, subtotali delicati,
+   celle compatte, surplus distinto.
+   Incollare in fondo a frontend/styles.css
+   ========================================================= */
+
+/* Tabella planner */
+#plannerMatrix {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  table-layout: auto !important;
+}
+
+/* Header sticky */
+#plannerMatrix thead th {
+  position: sticky !important;
+  z-index: 20;
+  background: #f8fbff !important;
+}
+
+/* Prima riga header: subtotali */
+#plannerMatrix thead tr.planner-subtotals-row th {
+  top: 0 !important;
+  height: 26px !important;
+  max-height: 26px !important;
+  min-height: 26px !important;
+  padding: 1px 2px !important;
+  background: #f7faff !important;
+  color: #5f7290 !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+  vertical-align: middle !important;
+}
+
+/* Seconda riga header: Wxx */
+#plannerMatrix thead tr:nth-child(2) th {
+  top: 26px !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  min-height: 24px !important;
+  padding: 2px 2px !important;
+  background: #f8fbff !important;
+  color: #0f172a !important;
+  font-size: 9px !important;
+  line-height: 1 !important;
+  font-weight: 800 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+}
+
+/* Colonne sticky: commessa */
+#plannerMatrix thead .sticky-col,
+#plannerMatrix tbody .sticky-col {
+  position: sticky !important;
+  left: 0 !important;
+  min-width: 170px !important;
+  width: 170px !important;
+  max-width: 170px !important;
+  z-index: 30 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+
+/* Colonne sticky: mansione */
+#plannerMatrix thead .sticky-col.second,
+#plannerMatrix tbody .sticky-col.second {
+  position: sticky !important;
+  left: 170px !important;
+  min-width: 130px !important;
+  width: 130px !important;
+  max-width: 130px !important;
+  z-index: 31 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+}
+
+/* Colonne sticky: copertura */
+#plannerMatrix thead .sticky-col.third,
+#plannerMatrix tbody .sticky-col.third {
+  position: sticky !important;
+  left: 300px !important;
+  min-width: 58px !important;
+  width: 58px !important;
+  max-width: 58px !important;
+  z-index: 32 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  text-align: center !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+
+/* Header sticky sopra body */
+#plannerMatrix thead .sticky-col {
+  z-index: 40 !important;
+  background: #f8fbff !important;
+}
+
+#plannerMatrix thead .sticky-col.second {
+  z-index: 41 !important;
+  background: #f8fbff !important;
+}
+
+#plannerMatrix thead .sticky-col.third {
+  z-index: 42 !important;
+  background: #f8fbff !important;
+}
+
+/* Celle sticky della riga subtotali */
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col,
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col.second,
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col.third {
+  background: #f7faff !important;
+  color: #64748b !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+}
+
+/* Week header e celle week */
+#plannerMatrix .week-head,
+#plannerMatrix .week-subtotal-head,
+#plannerMatrix tbody td[data-cell] {
+  min-width: 48px !important;
+  width: 48px !important;
+  max-width: 48px !important;
+  text-align: center !important;
+  padding-left: 1px !important;
+  padding-right: 1px !important;
+  overflow: hidden !important;
+}
+
+/* Subtotali R/A/D sopra week */
+#plannerMatrix .week-subtotal-head .metric,
+#plannerMatrix .week-subtotal-head .subtotal-line,
+#plannerMatrix .planner-subtotals-row .metric,
+#plannerMatrix .planner-subtotals-row .subtotal-line {
+  display: block !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.15px !important;
+  white-space: nowrap !important;
+}
+
+/* Celle planner */
+#plannerMatrix tbody td[data-cell] {
+  font-size: 8px !important;
+  line-height: 1.05 !important;
+  vertical-align: middle !important;
+  position: relative !important;
+  height: 34px !important;
+  max-height: 34px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+#plannerMatrix tbody td[data-cell] br {
+  line-height: 1 !important;
+}
+
+/* Week corrente */
+#plannerMatrix .week-head.current-week,
+#plannerMatrix .week-head.second-line.current-week,
+#plannerMatrix tbody td.current-col {
+  background: #eaf2ff !important;
+}
+
+/* Stati celle */
+#plannerMatrix tbody td.cell-empty {
+  background: #fbfcfe !important;
+  color: #1f2937 !important;
+}
+
+#plannerMatrix tbody td.cell-ok {
+  background: #e6f7ef !important;
+  color: #0c6b49 !important;
+  font-weight: 700 !important;
+}
+
+#plannerMatrix tbody td.cell-demand {
+  background: #ffe8e6 !important;
+  color: #9f2f26 !important;
+  font-weight: 700 !important;
+}
+
+/* Surplus: A > R oppure R0 con A > 0.
+   Il bordo rosso sarà pieno quando app.js assegna cell-surplus. */
+#plannerMatrix tbody td.cell-surplus {
+  background: #fff7ed !important;
+  box-shadow: inset 0 0 0 2px #dc2626 !important;
+  color: #7f1d1d !important;
+  font-weight: 800 !important;
+}
+
+#plannerMatrix tbody td.cell-surplus.current-col {
+  background: #ffedd5 !important;
+  box-shadow:
+    inset 0 0 0 2px #dc2626,
+    inset 0 0 0 4px #dbeafe !important;
+}
+
+/* Badge surplus */
+.cell-badge-surplus {
+  position: absolute !important;
+  top: 1px !important;
+  left: 1px !important;
+  width: 12px !important;
+  height: 12px !important;
+  border-radius: 0 !important;
+  font-size: 8px !important;
+  line-height: 10px !important;
+  font-weight: 900 !important;
+  background: #dc2626 !important;
+  color: #ffffff !important;
+  border: 1px solid #7f1d1d !important;
+  clip-path: polygon(0 0, 100% 0, 0 100%) !important;
+  display: inline-flex !important;
+  align-items: flex-start !important;
+  justify-content: flex-start !important;
+  padding-left: 1px !important;
+  pointer-events: none !important;
+  z-index: 4 !important;
+}
+
+/* Storico */
+.history-marker {
+  color: #2563eb !important;
+  font-size: 8px !important;
+  font-weight: 900 !important;
+  margin-left: 1px !important;
+}
+
+/* Selezione cella */
+#plannerMatrix tbody td.planner-cell-selected {
+  outline: 2px solid #0d63c7 !important;
+  outline-offset: -2px !important;
+}
+
+#plannerMatrix tbody td.planner-cell-range {
+  outline: 1px solid #60a5fa !important;
+  outline-offset: -1px !important;
+}
+/* =========================================================
+   FIX DEFINITIVO PLANNER V2 - allineamento + surplus
+   ========================================================= */
+
+#plannerMatrix {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  table-layout: auto !important;
+}
+
+#plannerMatrix thead th {
+  position: sticky !important;
+  background: #f8fbff !important;
+  z-index: 20 !important;
+}
+
+#plannerMatrix thead tr.planner-subtotals-row th {
+  top: 0 !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  min-height: 24px !important;
+  padding: 1px 2px !important;
+  background: #f7faff !important;
+  color: #5f7290 !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+}
+
+#plannerMatrix thead tr:nth-child(2) th {
+  top: 24px !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  min-height: 24px !important;
+  padding: 2px 2px !important;
+  background: #f8fbff !important;
+  color: #0f172a !important;
+  font-size: 9px !important;
+  line-height: 1 !important;
+  font-weight: 800 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+}
+
+#plannerMatrix thead .sticky-col,
+#plannerMatrix tbody .sticky-col {
+  position: sticky !important;
+  left: 0 !important;
+  min-width: 170px !important;
+  width: 170px !important;
+  max-width: 170px !important;
+  z-index: 30 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#plannerMatrix thead .sticky-col.second,
+#plannerMatrix tbody .sticky-col.second {
+  position: sticky !important;
+  left: 170px !important;
+  min-width: 130px !important;
+  width: 130px !important;
+  max-width: 130px !important;
+  z-index: 31 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+#plannerMatrix thead .sticky-col.third,
+#plannerMatrix tbody .sticky-col.third {
+  position: sticky !important;
+  left: 300px !important;
+  min-width: 58px !important;
+  width: 58px !important;
+  max-width: 58px !important;
+  z-index: 32 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  text-align: center !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+
+#plannerMatrix thead .sticky-col {
+  z-index: 40 !important;
+  background: #f8fbff !important;
+}
+
+#plannerMatrix thead .sticky-col.second {
+  z-index: 41 !important;
+  background: #f8fbff !important;
+}
+
+#plannerMatrix thead .sticky-col.third {
+  z-index: 42 !important;
+  background: #f8fbff !important;
+}
+
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col,
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col.second,
+#plannerMatrix thead tr.planner-subtotals-row .sticky-col.third {
+  background: #f7faff !important;
+  color: #64748b !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+}
+
+#plannerMatrix .week-head,
+#plannerMatrix .week-subtotal-head,
+#plannerMatrix tbody td[data-cell] {
+  min-width: 48px !important;
+  width: 48px !important;
+  max-width: 48px !important;
+  text-align: center !important;
+  padding-left: 1px !important;
+  padding-right: 1px !important;
+  overflow: hidden !important;
+}
+
+#plannerMatrix .week-subtotal-head.week-subtotal-past {
+  background: #f8fbff !important;
+}
+
+#plannerMatrix .week-subtotal-head .metric,
+#plannerMatrix .planner-subtotals-row .metric {
+  display: block !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.15px !important;
+  white-space: nowrap !important;
+}
+
+#plannerMatrix tbody td[data-cell] {
+  font-size: 8px !important;
+  line-height: 1.05 !important;
+  vertical-align: middle !important;
+  position: relative !important;
+  height: 34px !important;
+  max-height: 34px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+#plannerMatrix tbody td[data-cell] br {
+  line-height: 1 !important;
+}
+
+#plannerMatrix .week-head.current-week,
+#plannerMatrix .week-head.second-line.current-week,
+#plannerMatrix tbody td.current-col {
+  background: #eaf2ff !important;
+}
+
+#plannerMatrix tbody td.cell-empty {
+  background: #fbfcfe !important;
+  color: #1f2937 !important;
+}
+
+#plannerMatrix tbody td.cell-ok {
+  background: #e6f7ef !important;
+  color: #0c6b49 !important;
+  font-weight: 700 !important;
+}
+
+#plannerMatrix tbody td.cell-demand {
+  background: #ffe8e6 !important;
+  color: #9f2f26 !important;
+  font-weight: 700 !important;
+}
+
+/* SURPLUS: non è mancanza. È allocato oltre fabbisogno o R0 con A>0. */
+#plannerMatrix tbody td.cell-surplus {
+  background: #fffaf5 !important;
+  box-shadow: inset 0 0 0 2px #dc2626 !important;
+  color: #7f1d1d !important;
+  font-weight: 800 !important;
+}
+
+#plannerMatrix tbody td.cell-surplus.current-col {
+  background: #fff3e8 !important;
+  box-shadow:
+    inset 0 0 0 2px #dc2626,
+    inset 0 0 0 4px rgba(37, 99, 235, 0.15) !important;
+}
+
+/* Disattiva eventuali badge vecchi */
+.cell-badge-surplus,
+.cell-badge.cell-badge-surplus {
+  display: none !important;
+}
+
+.history-marker {
+  color: #2563eb !important;
+  font-size: 8px !important;
+  font-weight: 900 !important;
+  margin-left: 1px !important;
+}
+
+#plannerMatrix tbody td.planner-cell-selected {
+  outline: 2px solid #0d63c7 !important;
+  outline-offset: -2px !important;
+}
+
+#plannerMatrix tbody td.planner-cell-range {
+  outline: 1px solid #60a5fa !important;
+  outline-offset: -1px !important;
+}
+/* =========================================================
+   FIX DEFINITIVO PLANNER V2 - tabella reale .planner-matrix
+   ========================================================= */
+
+.planner-matrix {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  table-layout: auto !important;
+  width: max-content !important;
+  min-width: 0 !important;
+}
+
+/* Header sticky */
+.planner-matrix thead th {
+  position: sticky !important;
+  background: #f8fbff !important;
+  z-index: 20 !important;
+}
+
+/* Riga subtotali */
+.planner-matrix thead tr.planner-subtotals-row th {
+  top: 0 !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  min-height: 24px !important;
+  padding: 1px 2px !important;
+  background: #f7faff !important;
+  color: #5f7290 !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+}
+
+/* Riga Wxx */
+.planner-matrix thead tr:nth-child(2) th {
+  top: 24px !important;
+  height: 24px !important;
+  max-height: 24px !important;
+  min-height: 24px !important;
+  padding: 2px 2px !important;
+  background: #f8fbff !important;
+  color: #0f172a !important;
+  font-size: 9px !important;
+  line-height: 1 !important;
+  font-weight: 800 !important;
+  border-bottom: 1px solid #dbe4ef !important;
+}
+
+/* Colonna Commessa */
+.planner-matrix thead .sticky-col,
+.planner-matrix tbody .sticky-col {
+  position: sticky !important;
+  left: 0 !important;
+  min-width: 170px !important;
+  width: 170px !important;
+  max-width: 170px !important;
+  z-index: 30 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Colonna Mansione */
+.planner-matrix thead .sticky-col.second,
+.planner-matrix tbody .sticky-col.second {
+  position: sticky !important;
+  left: 170px !important;
+  min-width: 130px !important;
+  width: 130px !important;
+  max-width: 130px !important;
+  z-index: 31 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Colonna Copertura */
+.planner-matrix thead .sticky-col.third,
+.planner-matrix tbody .sticky-col.third {
+  position: sticky !important;
+  left: 300px !important;
+  min-width: 58px !important;
+  width: 58px !important;
+  max-width: 58px !important;
+  z-index: 32 !important;
+  background: #ffffff !important;
+  border-right: 1px solid #dbe4ef !important;
+  text-align: center !important;
+  padding-left: 2px !important;
+  padding-right: 2px !important;
+}
+
+/* Header sopra body */
+.planner-matrix thead .sticky-col {
+  z-index: 40 !important;
+  background: #f8fbff !important;
+}
+
+.planner-matrix thead .sticky-col.second {
+  z-index: 41 !important;
+  background: #f8fbff !important;
+}
+
+.planner-matrix thead .sticky-col.third {
+  z-index: 42 !important;
+  background: #f8fbff !important;
+}
+
+/* Celle sticky della riga subtotali */
+.planner-matrix thead tr.planner-subtotals-row .sticky-col,
+.planner-matrix thead tr.planner-subtotals-row .sticky-col.second,
+.planner-matrix thead tr.planner-subtotals-row .sticky-col.third {
+  background: #f7faff !important;
+  color: #64748b !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 700 !important;
+  text-align: center !important;
+}
+
+/* Week header e celle week */
+.planner-matrix .week-head,
+.planner-matrix .week-subtotal-head,
+.planner-matrix tbody td[data-cell] {
+  min-width: 48px !important;
+  width: 48px !important;
+  max-width: 48px !important;
+  text-align: center !important;
+  padding-left: 1px !important;
+  padding-right: 1px !important;
+  overflow: hidden !important;
+}
+
+/* Week passate nella riga subtotali: vuote e leggere */
+.planner-matrix .week-subtotal-head.week-subtotal-past {
+  background: #f8fbff !important;
+  color: transparent !important;
+}
+
+/* Subtotali R/A/D */
+.planner-matrix .week-subtotal-head .metric,
+.planner-matrix .planner-subtotals-row .metric {
+  display: block !important;
+  font-size: 8px !important;
+  line-height: 0.95 !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.15px !important;
+  white-space: nowrap !important;
+}
+
+/* Celle planner */
+.planner-matrix tbody td[data-cell] {
+  font-size: 8px !important;
+  line-height: 1.05 !important;
+  vertical-align: middle !important;
+  position: relative !important;
+  height: 34px !important;
+  max-height: 34px !important;
+  padding-top: 2px !important;
+  padding-bottom: 2px !important;
+}
+
+.planner-matrix tbody td[data-cell] br {
+  line-height: 1 !important;
+}
+
+/* Week corrente */
+.planner-matrix .week-head.current-week,
+.planner-matrix .week-head.second-line.current-week,
+.planner-matrix tbody td.current-col {
+  background: #eaf2ff !important;
+}
+
+/* Stati celle */
+.planner-matrix tbody td.cell-empty {
+  background: #fbfcfe !important;
+  color: #1f2937 !important;
+}
+
+.planner-matrix tbody td.cell-ok {
+  background: #e6f7ef !important;
+  color: #0c6b49 !important;
+  font-weight: 700 !important;
+}
+
+.planner-matrix tbody td.cell-demand {
+  background: #ffe8e6 !important;
+  color: #9f2f26 !important;
+  font-weight: 700 !important;
+}
+
+/* SURPLUS: non è scoperto. Cornice rossa, fondo quasi neutro. */
+.planner-matrix tbody td.cell-surplus {
+  background: #fffaf5 !important;
+  box-shadow: inset 0 0 0 2px #dc2626 !important;
+  color: #7f1d1d !important;
+  font-weight: 800 !important;
+}
+
+.planner-matrix tbody td.cell-surplus.current-col {
+  background: #fff3e8 !important;
+  box-shadow:
+    inset 0 0 0 2px #dc2626,
+    inset 0 0 0 4px rgba(37, 99, 235, 0.15) !important;
+}
+
+/* Disattiva eventuali badge vecchi */
+.cell-badge-surplus,
+.cell-badge.cell-badge-surplus {
+  display: none !important;
+}
+
+/* Storico */
+.history-marker {
+  color: #2563eb !important;
+  font-size: 8px !important;
+  font-weight: 900 !important;
+  margin-left: 1px !important;
+}
+
+/* Selezione */
+.planner-matrix tbody td.planner-cell-selected {
+  outline: 2px solid #0d63c7 !important;
+  outline-offset: -2px !important;
+}
+
+.planner-matrix tbody td.planner-cell-range {
+  outline: 1px solid #60a5fa !important;
+  outline-offset: -1px !important;
+}
