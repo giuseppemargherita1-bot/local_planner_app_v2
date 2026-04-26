@@ -29,10 +29,21 @@ const assignedResourceList = document.getElementById("assignedResourceList");
 const availableResourceList = document.getElementById("availableResourceList");
 
 const API_BASE = "http://127.0.0.1:8000";
-const CURRENT_WEEK = 17;
+
+const CURRENT_PERIOD_KEY = 2617;
+const PERIOD_YEAR_SHORT = 26;
 const FIRST_WEEK = 1;
-const LAST_WEEK = 43;
-const WEEKS = Array.from({ length: LAST_WEEK - FIRST_WEEK + 1 }, (_, i) => FIRST_WEEK + i);
+const LAST_WEEK = 52;
+
+const PERIODS = Array.from({ length: LAST_WEEK - FIRST_WEEK + 1 }, (_, i) => {
+  const week = FIRST_WEEK + i;
+  return {
+    yearShort: PERIOD_YEAR_SHORT,
+    week,
+    periodKey: PERIOD_YEAR_SHORT * 100 + week,
+    label: `W${String(week).padStart(2, "0")}`,
+  };
+});
 
 let verticalDrag = null;
 let horizontalDrag = null;
@@ -135,8 +146,30 @@ function escapeHtml(value) {
     .replaceAll("'", "&#039;");
 }
 
-function getWeekStartDate(year, week) {
-  const jan4 = new Date(year, 0, 4);
+function periodKeyFromWeek(week, yearShort = PERIOD_YEAR_SHORT) {
+  const numericWeek = Number(week || 0);
+  if (numericWeek >= 1000) return numericWeek;
+  return Number(yearShort) * 100 + numericWeek;
+}
+
+function weekFromPeriodKey(periodKey) {
+  const value = Number(periodKey || 0);
+  if (value >= 1000) return value % 100;
+  return value;
+}
+
+function normalizePeriodKey(row) {
+  const explicit = Number(row?.period_key || row?.periodKey || 0);
+  if (explicit > 0) return explicit;
+  return periodKeyFromWeek(row?.week || 0);
+}
+
+function getPeriodByKey(periodKey) {
+  return PERIODS.find((period) => Number(period.periodKey) === Number(periodKey)) || null;
+}
+
+function getWeekStartDate(yearFull, week) {
+  const jan4 = new Date(yearFull, 0, 4);
   const day = jan4.getDay() || 7;
   const mondayWeek1 = new Date(jan4);
   mondayWeek1.setDate(jan4.getDate() - day + 1);
@@ -146,22 +179,46 @@ function getWeekStartDate(year, week) {
   return result;
 }
 
+function fullYearFromShort(yearShort) {
+  return 2000 + Number(yearShort || PERIOD_YEAR_SHORT);
+}
+
 function formatDate(date) {
   const dd = String(date.getDate()).padStart(2, "0");
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   return `${dd}/${mm}`;
 }
 
-function getWeekRangeLabel(weekFrom, weekTo = weekFrom) {
-  const year = 2026;
-  const start = getWeekStartDate(year, weekFrom);
-  const end = new Date(getWeekStartDate(year, weekTo));
+function getPeriodRangeLabel(periodKeyFrom, periodKeyTo = periodKeyFrom) {
+  const startPeriod = getPeriodByKey(periodKeyFrom) || {
+    yearShort: Math.floor(Number(periodKeyFrom) / 100),
+    week: weekFromPeriodKey(periodKeyFrom),
+  };
+
+  const endPeriod = getPeriodByKey(periodKeyTo) || {
+    yearShort: Math.floor(Number(periodKeyTo) / 100),
+    week: weekFromPeriodKey(periodKeyTo),
+  };
+
+  const start = getWeekStartDate(fullYearFromShort(startPeriod.yearShort), startPeriod.week);
+  const end = new Date(getWeekStartDate(fullYearFromShort(endPeriod.yearShort), endPeriod.week));
   end.setDate(end.getDate() + 6);
+
   return `${formatDate(start)} - ${formatDate(end)}`;
+}
+
+function getWeekRangeLabel(weekFrom, weekTo = weekFrom) {
+  return getPeriodRangeLabel(periodKeyFromWeek(weekFrom), periodKeyFromWeek(weekTo));
 }
 
 function applyWeekTooltips() {
   document.querySelectorAll(".week-head").forEach((cell) => {
+    const periodKey = Number(cell.dataset.periodKey || 0);
+    if (periodKey > 0) {
+      cell.title = getPeriodRangeLabel(periodKey);
+      return;
+    }
+
     const text = (cell.textContent || "").trim().toUpperCase();
     const match = text.match(/^W(\d{1,2})$/);
     if (!match) return;
@@ -175,7 +232,7 @@ function scrollToCurrentWeek() {
   const current = document.querySelector(".second-line.current-week, .week-head.current-week");
   if (!current) return;
 
-  const leftStickyWidth = 140 + 160 + 56;
+  const leftStickyWidth = 170 + 130 + 58;
   plannerGridWrap.scrollLeft = Math.max(0, current.offsetLeft - leftStickyWidth - 20);
 }
 
@@ -267,14 +324,14 @@ function mansioneLabel(rowRole, resourceRole) {
   return `no mans ${res}`;
 }
 
-function getExtSequenceKey(role, week) {
-  return `${normalizeExtRoleLabel(role)}__${Number(week)}`;
+function getExtSequenceKey(role, periodKey) {
+  return `${normalizeExtRoleLabel(role)}__${Number(periodKey)}`;
 }
 
-function getExtDisplayName(allocation, rowRole, week) {
+function getExtDisplayName(allocation, rowRole, periodKey) {
   const allocationId = Number(allocation.id || allocation.history_id || allocation.allocation_id || 0);
   const role = normalizeExtRoleLabel(rowRole || allocation.role || allocation.resource_role || "EXT");
-  const key = getExtSequenceKey(role, week);
+  const key = getExtSequenceKey(role, periodKey);
 
   if (!extSequenceMap.has(key)) {
     extSequenceMap.set(key, {
@@ -299,12 +356,12 @@ function getExtDisplayName(allocation, rowRole, week) {
   return `${role}${current}-EXT`;
 }
 
-function formatAssignmentLine(item, rowRole, week = null) {
+function formatAssignmentLine(item, rowRole, periodKey = null) {
   const resource = getAllocationResource(item);
   const isExt = isExternalResource(resource) || isExternalResource(item);
 
   if (isExt) {
-    const extName = getExtDisplayName(item, rowRole, week || item.week);
+    const extName = getExtDisplayName(item, rowRole, periodKey || normalizePeriodKey(item));
     const load = formatLoad(item.load_percent || item.loadPercent || 100);
     return `${extName} | EXT | ${load}`;
   }
@@ -320,7 +377,8 @@ function buildDemandMap(demands) {
   const map = new Map();
   for (const demand of demands) {
     const role = normalizeRole(demand.role);
-    const key = `${Number(demand.project_id)}__${role}__${Number(demand.week)}`;
+    const periodKey = normalizePeriodKey(demand);
+    const key = `${Number(demand.project_id)}__${role}__${periodKey}`;
     map.set(key, Number(demand.quantity || 0));
   }
   return map;
@@ -351,16 +409,21 @@ function isExplicitlyUnavailable(resource) {
   );
 }
 
-function isResourceAvailableForWeek(resource, week) {
+function isResourceAvailableForPeriod(resource, periodKey) {
   if (isExternalResource(resource)) return true;
 
   if (!resource.is_active) return false;
   if (isExplicitlyUnavailable(resource)) return false;
 
+  const week = weekFromPeriodKey(periodKey);
   const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
   if (startWeek !== null && week < startWeek) return false;
 
   return true;
+}
+
+function isResourceAvailableForWeek(resource, week) {
+  return isResourceAvailableForPeriod(resource, periodKeyFromWeek(week));
 }
 
 function buildAllocationMaps(allocations, resources) {
@@ -374,14 +437,16 @@ function buildAllocationMaps(allocations, resources) {
     const resource = resourceById.get(Number(allocation.resource_id));
     if (!resource) continue;
 
-    if (!isResourceAvailableForWeek(resource, Number(allocation.week))) continue;
+    const periodKey = normalizePeriodKey(allocation);
+
+    if (!isResourceAvailableForPeriod(resource, periodKey)) continue;
 
     const role = normalizeRole(allocation.role || resource.role || "");
     const rowKey = `${Number(allocation.project_id)}__${role}`;
 
     if (!demandRowSet.has(rowKey)) continue;
 
-    const key = `${Number(allocation.project_id)}__${role}__${Number(allocation.week)}`;
+    const key = `${Number(allocation.project_id)}__${role}__${periodKey}`;
     const value = Number(allocation.load_percent || 0) / 100;
 
     totalMap.set(key, (totalMap.get(key) || 0) + value);
@@ -405,7 +470,8 @@ function buildHistoryMap(historyRows) {
 
   for (const row of historyRows) {
     const role = normalizeRole(row.role);
-    const key = `${Number(row.project_id)}__${role}__${Number(row.week)}`;
+    const periodKey = normalizePeriodKey(row);
+    const key = `${Number(row.project_id)}__${role}__${periodKey}`;
     if (!map.has(key)) map.set(key, []);
     map.get(key).push(row);
   }
@@ -451,7 +517,7 @@ function getCoverageClass(required, allocated) {
   return "coverage good";
 }
 
-function getCellClass(required, allocated, week, hasHistory, hasAllocationHistory) {
+function getCellClass(required, allocated, periodKey, hasHistory, hasAllocationHistory) {
   let cls = "cell-empty planner-cell-clickable";
 
   if (required > 0 && allocated < required) {
@@ -464,7 +530,7 @@ function getCellClass(required, allocated, week, hasHistory, hasAllocationHistor
     cls = "cell-surplus planner-cell-clickable";
   }
 
-  if (week === CURRENT_WEEK) cls += " current-col";
+  if (periodKey === CURRENT_PERIOD_KEY) cls += " current-col";
   if (hasHistory || hasAllocationHistory) cls += " cell-history";
 
   return cls;
@@ -488,7 +554,7 @@ function getSelectionSummary() {
 
   const first = selectedCells[0];
   const decoded = JSON.parse(decodeURIComponent(first.dataset.cell));
-  const weeks = selectedCells.map((cell) => Number(cell.dataset.week)).sort((a, b) => a - b);
+  const periodKeys = selectedCells.map((cell) => Number(cell.dataset.periodKey)).sort((a, b) => a - b);
 
   const totalRequired = selectedCells.reduce((sum, cell) => {
     const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
@@ -510,13 +576,18 @@ function getSelectionSummary() {
     return sum + Number(data.externalAllocated || 0);
   }, 0);
 
+  const periodFrom = periodKeys[0];
+  const periodTo = periodKeys[periodKeys.length - 1];
+
   return {
     project_id: Number(decoded.project_id),
     project_name: decoded.project_name,
     role: decoded.role,
     row_key: `${Number(decoded.project_id)}__${decoded.role}`,
-    week_from: weeks[0],
-    week_to: weeks[weeks.length - 1],
+    period_from: periodFrom,
+    period_to: periodTo,
+    week_from: weekFromPeriodKey(periodFrom),
+    week_to: weekFromPeriodKey(periodTo),
     required: selectedCells.length === 1 ? decoded.required : totalRequired,
     allocated: totalAllocated,
     internalAllocated: totalInternalAllocated,
@@ -531,13 +602,13 @@ function updateSidePanelFromSelection() {
 
   selectionBox.textContent =
     `${summary.project_name} | ${summary.role} | W${String(summary.week_from).padStart(2, "0")}` +
-    `${summary.week_to !== summary.week_from ? ` - W${String(summary.week_to).padStart(2, "0")}` : ""}`;
+    `${summary.period_to !== summary.period_from ? ` - W${String(summary.week_to).padStart(2, "0")}` : ""}`;
 
   detailProject.value = summary.project_name;
   detailRole.value = summary.role;
   detailWeekFrom.value = summary.week_from;
   detailWeekTo.value = summary.week_to;
-  detailRange.value = getWeekRangeLabel(summary.week_from, summary.week_to);
+  detailRange.value = getPeriodRangeLabel(summary.period_from, summary.period_to);
   detailRequired.value = formatNumber(summary.required);
   detailAllocated.value = formatAllocatedDisplay(summary.internalAllocated, summary.externalAllocated);
   detailDiff.value = formatNumber(summary.required - summary.allocated);
@@ -573,15 +644,23 @@ function extendSelection(direction) {
 
   const anchor = selectedCells[0];
   const rowIndex = anchor.dataset.rowIndex;
-  const weeks = selectedCells.map((cell) => Number(cell.dataset.week)).sort((a, b) => a - b);
-  const minWeek = weeks[0];
-  const maxWeek = weeks[weeks.length - 1];
+  const periodKeys = selectedCells.map((cell) => Number(cell.dataset.periodKey)).sort((a, b) => a - b);
+  const minPeriod = periodKeys[0];
+  const maxPeriod = periodKeys[periodKeys.length - 1];
 
-  const targetWeek = direction === "right" ? maxWeek + 1 : minWeek - 1;
-  if (targetWeek < FIRST_WEEK || targetWeek > LAST_WEEK) return;
+  const currentIndex = direction === "right"
+    ? PERIODS.findIndex((p) => p.periodKey === maxPeriod)
+    : PERIODS.findIndex((p) => p.periodKey === minPeriod);
+
+  if (currentIndex < 0) return;
+
+  const targetIndex = direction === "right" ? currentIndex + 1 : currentIndex - 1;
+  if (targetIndex < 0 || targetIndex >= PERIODS.length) return;
+
+  const targetPeriodKey = PERIODS[targetIndex].periodKey;
 
   const targetCell = plannerBody.querySelector(
-    `td[data-row-index="${rowIndex}"][data-week="${targetWeek}"]`
+    `td[data-row-index="${rowIndex}"][data-period-key="${targetPeriodKey}"]`
   );
   if (!targetCell) return;
 
@@ -598,13 +677,18 @@ function moveSelection(deltaRow, deltaCol) {
 
   const anchor = selectedCells[0];
   const currentRow = Number(anchor.dataset.rowIndex);
-  const currentWeek = Number(anchor.dataset.week);
+  const currentPeriodKey = Number(anchor.dataset.periodKey);
+  const currentIndex = PERIODS.findIndex((p) => p.periodKey === currentPeriodKey);
+  if (currentIndex < 0) return;
 
   const targetRow = currentRow + deltaRow;
-  const targetWeek = currentWeek + deltaCol;
+  const targetIndex = currentIndex + deltaCol;
+  if (targetIndex < 0 || targetIndex >= PERIODS.length) return;
+
+  const targetPeriodKey = PERIODS[targetIndex].periodKey;
 
   const target = plannerBody.querySelector(
-    `td[data-row-index="${targetRow}"][data-week="${targetWeek}"]`
+    `td[data-row-index="${targetRow}"][data-period-key="${targetPeriodKey}"]`
   );
 
   if (!target) return;
@@ -631,44 +715,68 @@ function moveFocusToGrid() {
   if (plannerGridWrap) plannerGridWrap.focus();
 }
 
-function getSelectedWeeksSet() {
+function getSelectedPeriodKeysSet() {
   const summary = getSelectionSummary();
-  const selectedWeeks = new Set();
+  const selected = new Set();
 
-  if (!summary) return selectedWeeks;
+  if (!summary) return selected;
 
-  for (let w = summary.week_from; w <= summary.week_to; w += 1) {
-    selectedWeeks.add(w);
+  const startIndex = PERIODS.findIndex((p) => p.periodKey === summary.period_from);
+  const endIndex = PERIODS.findIndex((p) => p.periodKey === summary.period_to);
+
+  if (startIndex < 0 || endIndex < 0) return selected;
+
+  for (let i = startIndex; i <= endIndex; i += 1) {
+    selected.add(PERIODS[i].periodKey);
   }
 
-  return selectedWeeks;
+  return selected;
 }
 
-function getResourceAllocationsForSelectedWeeks(resourceId) {
-  const selectedWeeks = getSelectedWeeksSet();
+function getSelectedWeeksSet() {
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
+  const weeks = new Set();
+
+  selectedPeriodKeys.forEach((periodKey) => {
+    weeks.add(weekFromPeriodKey(periodKey));
+  });
+
+  return weeks;
+}
+
+function getResourceAllocationsForSelectedPeriods(resourceId) {
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
 
   return allocationsData.filter((allocation) => {
     return (
       Number(allocation.resource_id) === Number(resourceId) &&
-      selectedWeeks.has(Number(allocation.week))
+      selectedPeriodKeys.has(normalizePeriodKey(allocation))
     );
   });
 }
 
-function getResourceAllocationsForWeek(resourceId, week) {
+function getResourceAllocationsForSelectedWeeks(resourceId) {
+  return getResourceAllocationsForSelectedPeriods(resourceId);
+}
+
+function getResourceAllocationsForPeriod(resourceId, periodKey) {
   return allocationsData.filter((allocation) => {
-    return Number(allocation.resource_id) === Number(resourceId) && Number(allocation.week) === Number(week);
+    return Number(allocation.resource_id) === Number(resourceId) && normalizePeriodKey(allocation) === Number(periodKey);
   });
+}
+
+function getResourceAllocationsForWeek(resourceId, week) {
+  return getResourceAllocationsForPeriod(resourceId, periodKeyFromWeek(week));
 }
 
 function getAssignedResourcesForSelection() {
   const summary = getSelectionSummary();
   if (!summary) return [];
 
-  const selectedWeeks = getSelectedWeeksSet();
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
 
   return resourcesData.filter((resource) => {
-    if (!isResourceAvailableForWeek(resource, summary.week_from)) return false;
+    if (!isResourceAvailableForPeriod(resource, summary.period_from)) return false;
 
     return allocationsData.some((allocation) => {
       const allocationRole = normalizeRole(allocation.role || "");
@@ -677,7 +785,7 @@ function getAssignedResourcesForSelection() {
         Number(allocation.resource_id) === Number(resource.id) &&
         Number(allocation.project_id) === Number(summary.project_id) &&
         allocationRole === summary.role &&
-        selectedWeeks.has(Number(allocation.week))
+        selectedPeriodKeys.has(normalizePeriodKey(allocation))
       );
     });
   });
@@ -700,25 +808,25 @@ function getResourceStatus(resource) {
 
   const demandRowSet = buildDemandRowSet(demandsData);
 
-  const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+  const allocations = getResourceAllocationsForSelectedPeriods(resource.id).filter((allocation) => {
     const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return demandRowSet.has(rowKey);
   });
 
-  const maxPerWeek = new Map();
+  const maxPerPeriod = new Map();
 
   allocations.forEach((allocation) => {
-    const week = Number(allocation.week);
-    maxPerWeek.set(week, (maxPerWeek.get(week) || 0) + 1);
+    const periodKey = normalizePeriodKey(allocation);
+    maxPerPeriod.set(periodKey, (maxPerPeriod.get(periodKey) || 0) + 1);
   });
 
-  const values = Array.from(maxPerWeek.values());
+  const values = Array.from(maxPerPeriod.values());
 
   if (values.some((count) => count >= 2)) return "saturated";
   if (values.some((count) => count === 1)) return "partial";
 
-  const historical = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+  const historical = getResourceAllocationsForSelectedPeriods(resource.id).filter((allocation) => {
     const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return !demandRowSet.has(rowKey);
@@ -732,14 +840,16 @@ function getResourceStatus(resource) {
 function allocationShortLabel(allocation) {
   const project = allocation.project_name || `Progetto ${allocation.project_id}`;
   const role = allocation.role || "-";
+  const periodKey = normalizePeriodKey(allocation);
+  const week = weekFromPeriodKey(periodKey);
   const load = Number(allocation.load_percent || 0);
-  return `${project} ${role} W${String(allocation.week).padStart(2, "0")} ${load}%`;
+  return `${project} ${role} W${String(week).padStart(2, "0")} ${load}%`;
 }
 
 function getAllocationLocationText(resource, onlyHistorical = false) {
   const demandRowSet = buildDemandRowSet(demandsData);
 
-  const allocations = getResourceAllocationsForSelectedWeeks(resource.id).filter((allocation) => {
+  const allocations = getResourceAllocationsForSelectedPeriods(resource.id).filter((allocation) => {
     const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     const isHistorical = !demandRowSet.has(rowKey);
@@ -879,7 +989,7 @@ function renderResourceLists() {
 
   availableResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
     item.addEventListener("dblclick", async () => {
-      const status = item.datasetResourceStatus || item.dataset.resourceStatus;
+      const status = item.dataset.resourceStatus;
       if (status === "inactive" || status === "unavailable" || status === "future") return;
 
       const resourceId = Number(item.dataset.resourceId);
@@ -958,9 +1068,9 @@ async function handleAvailableResourceDoubleClick(resourceId) {
     return;
   }
 
-  if (summary.week_from !== summary.week_to) {
+  if (summary.period_from !== summary.period_to) {
     const demandRowSet = buildDemandRowSet(demandsData);
-    const conflicts = getResourceAllocationsForSelectedWeeks(resourceId).filter((allocation) => {
+    const conflicts = getResourceAllocationsForSelectedPeriods(resourceId).filter((allocation) => {
       const allocationRole = normalizeRole(allocation.role || "");
       const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
       return demandRowSet.has(rowKey);
@@ -979,9 +1089,9 @@ async function handleAvailableResourceDoubleClick(resourceId) {
     return;
   }
 
-  const week = summary.week_from;
+  const periodKey = summary.period_from;
   const demandRowSet = buildDemandRowSet(demandsData);
-  const existing = getResourceAllocationsForWeek(resourceId, week).filter((allocation) => {
+  const existing = getResourceAllocationsForPeriod(resourceId, periodKey).filter((allocation) => {
     const allocationRole = normalizeRole(allocation.role || "");
     const rowKey = `${Number(allocation.project_id)}__${allocationRole}`;
     return demandRowSet.has(rowKey);
@@ -1139,8 +1249,8 @@ async function saveDemandRange() {
   const payload = {
     project_id: Number(summary.project_id),
     role: summary.role,
-    week_from: Number(detailWeekFrom.value),
-    week_to: Number(detailWeekTo.value),
+    week_from: Number(summary.week_from),
+    week_to: Number(summary.week_to),
     quantity: Number(String(detailRequired.value).replace(",", ".")),
     note: "Salvataggio da planner V2",
   };
@@ -1205,19 +1315,20 @@ async function removeResourceFromSelection(resourceId) {
   setMode("resources");
 }
 
-function getCellAssignments(projectId, role, week) {
+function getCellAssignments(projectId, role, periodKey) {
   const normalizedRole = normalizeRole(role);
 
   return allocationsData.filter((item) => {
     return (
       Number(item.project_id) === Number(projectId) &&
       normalizeRole(item.role || "") === normalizedRole &&
-      Number(item.week) === Number(week)
+      normalizePeriodKey(item) === Number(periodKey)
     );
   });
 }
 
-function buildCellCalloutHtml(projectName, role, week, assignments, released, demandHistoryRows) {
+function buildCellCalloutHtml(projectName, role, periodKey, assignments, released, demandHistoryRows) {
+  const week = weekFromPeriodKey(periodKey);
   const parts = [];
 
   parts.push(`<div class="cell-callout-title">${escapeHtml(projectName)} | ${escapeHtml(role)} | W${String(week).padStart(2, "0")}</div>`);
@@ -1225,14 +1336,14 @@ function buildCellCalloutHtml(projectName, role, week, assignments, released, de
   if (assignments.length) {
     parts.push(`<div class="cell-callout-section">Assegnati</div>`);
     assignments.forEach((item) => {
-      parts.push(`<div class="cell-callout-line">${escapeHtml(formatAssignmentLine(item, role, week))}</div>`);
+      parts.push(`<div class="cell-callout-line">${escapeHtml(formatAssignmentLine(item, role, periodKey))}</div>`);
     });
   }
 
   if (released.length) {
     parts.push(`<div class="cell-callout-section">Non più conteggiati</div>`);
     released.forEach((item) => {
-      const line = `${formatAssignmentLine(item, role, week)} | ${item.reason || "storico"}`;
+      const line = `${formatAssignmentLine(item, role, periodKey)} | ${item.reason || "storico"}`;
       parts.push(`<div class="cell-callout-line cell-callout-released">${escapeHtml(line)}</div>`);
     });
   }
@@ -1287,9 +1398,9 @@ function hideCellCallout() {
 function computeWeekTotals(rows, demandMap, allocationMaps) {
   const totals = new Map();
 
-  WEEKS.forEach((week) => {
-    totals.set(week, {
-      week,
+  PERIODS.forEach((period) => {
+    totals.set(period.periodKey, {
+      periodKey: period.periodKey,
       required: 0,
       internalAllocated: 0,
       externalAllocated: 0,
@@ -1299,14 +1410,14 @@ function computeWeekTotals(rows, demandMap, allocationMaps) {
   });
 
   rows.forEach((row) => {
-    WEEKS.forEach((week) => {
-      const key = `${row.project_id}__${row.role}__${week}`;
+    PERIODS.forEach((period) => {
+      const key = `${row.project_id}__${row.role}__${period.periodKey}`;
       const required = demandMap.get(key) || 0;
       const internalAllocated = allocationMaps.internalMap.get(key) || 0;
       const externalAllocated = allocationMaps.externalMap.get(key) || 0;
       const allocated = internalAllocated + externalAllocated;
 
-      const total = totals.get(week);
+      const total = totals.get(period.periodKey);
       total.required += required;
       total.internalAllocated += internalAllocated;
       total.externalAllocated += externalAllocated;
@@ -1329,18 +1440,18 @@ function renderPlannerHeader(rows, demandMap, allocationMaps) {
       <th class="sticky-col planner-subtotals-label">Subtotali</th>
       <th class="sticky-col second planner-subtotals-label">Vista</th>
       <th class="sticky-col third planner-subtotals-label">Tot</th>
-      ${WEEKS.map((week) => {
-        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
+      ${PERIODS.map((period) => {
+        const currentClass = period.periodKey === CURRENT_PERIOD_KEY ? " current-week" : "";
 
-        if (week < CURRENT_WEEK) {
-          return `<th class="week-head week-subtotal-head week-subtotal-past${currentClass}" title="${getWeekRangeLabel(week)}"></th>`;
+        if (period.periodKey < CURRENT_PERIOD_KEY) {
+          return `<th class="week-head week-subtotal-head week-subtotal-past${currentClass}" data-period-key="${period.periodKey}" title="${getPeriodRangeLabel(period.periodKey)}"></th>`;
         }
 
-        const total = totals.get(week);
+        const total = totals.get(period.periodKey);
         const allocatedDisplay = formatAllocatedDisplay(total.internalAllocated, total.externalAllocated);
 
         return `
-          <th class="week-head week-subtotal-head${currentClass}" title="${getWeekRangeLabel(week)}">
+          <th class="week-head week-subtotal-head${currentClass}" data-period-key="${period.periodKey}" title="${getPeriodRangeLabel(period.periodKey)}">
             <span class="metric">R${formatNumber(total.required)}</span>
             <span class="metric">A${allocatedDisplay}</span>
             <span class="metric">D${formatNumber(total.diff)}</span>
@@ -1352,9 +1463,9 @@ function renderPlannerHeader(rows, demandMap, allocationMaps) {
       <th class="sticky-col">Commessa</th>
       <th class="sticky-col second">Mansione</th>
       <th class="sticky-col third">Cop.</th>
-      ${WEEKS.map((week) => {
-        const currentClass = week === CURRENT_WEEK ? " current-week" : "";
-        return `<th class="week-head second-line${currentClass}" title="${getWeekRangeLabel(week)}">W${String(week).padStart(2, "0")}</th>`;
+      ${PERIODS.map((period) => {
+        const currentClass = period.periodKey === CURRENT_PERIOD_KEY ? " current-week" : "";
+        return `<th class="week-head second-line${currentClass}" data-period-key="${period.periodKey}" title="${getPeriodRangeLabel(period.periodKey)}">${period.label}</th>`;
       }).join("")}
     </tr>
   `;
@@ -1379,7 +1490,7 @@ function renderPlanner() {
         <td class="sticky-col">Nessun dato planner</td>
         <td class="sticky-col second">-</td>
         <td class="sticky-col third coverage good">0/0<br><small>0%</small></td>
-        ${WEEKS.map(() => `<td class="cell-empty"></td>`).join("")}
+        ${PERIODS.map(() => `<td class="cell-empty"></td>`).join("")}
       </tr>
     `;
     return;
@@ -1391,8 +1502,8 @@ function renderPlanner() {
     let totalInternalAllocated = 0;
     let totalExternalAllocated = 0;
 
-    const weekCells = WEEKS.map((week) => {
-      const key = `${row.project_id}__${row.role}__${week}`;
+    const periodCells = PERIODS.map((period) => {
+      const key = `${row.project_id}__${row.role}__${period.periodKey}`;
       const required = demandMap.get(key) || 0;
       const internalAllocated = allocationMaps.internalMap.get(key) || 0;
       const externalAllocated = allocationMaps.externalMap.get(key) || 0;
@@ -1404,7 +1515,7 @@ function renderPlanner() {
       const releasedRows = allocationHistoryMap.get(key) || [];
       const hasHistory = historyRows.length > 0;
       const hasAllocationHistory = releasedRows.length > 0;
-      const assignments = getCellAssignments(row.project_id, row.role, week);
+      const assignments = getCellAssignments(row.project_id, row.role, period.periodKey);
 
       totalRequired += required;
       totalAllocated += allocated;
@@ -1412,14 +1523,15 @@ function renderPlanner() {
       totalExternalAllocated += externalAllocated;
 
       const calloutHtml = encodeURIComponent(
-        buildCellCalloutHtml(row.project_name, row.role, week, assignments, releasedRows, historyRows)
+        buildCellCalloutHtml(row.project_name, row.role, period.periodKey, assignments, releasedRows, historyRows)
       );
 
       const payload = encodeURIComponent(JSON.stringify({
         project_id: row.project_id,
         project_name: row.project_name,
         role: row.role,
-        week,
+        week: period.week,
+        period_key: period.periodKey,
         required,
         allocated,
         internalAllocated,
@@ -1429,11 +1541,12 @@ function renderPlanner() {
 
       return `
         <td
-          class="${getCellClass(required, allocated, week, hasHistory, hasAllocationHistory)}"
+          class="${getCellClass(required, allocated, period.periodKey, hasHistory, hasAllocationHistory)}"
           data-cell='${payload}'
           data-callout='${calloutHtml}'
           data-row-index="${rowIndex}"
-          data-week="${week}"
+          data-week="${period.week}"
+          data-period-key="${period.periodKey}"
         >
           R${formatNumber(required)}<br>
           A${allocatedDisplay}<br>
@@ -1454,7 +1567,7 @@ function renderPlanner() {
           ${totalAllocatedDisplay}/${formatNumber(totalRequired)}<br>
           <small>${percent}%</small>
         </td>
-        ${weekCells}
+        ${periodCells}
       </tr>
     `;
   }).join("");
@@ -1503,7 +1616,7 @@ async function loadAndRenderPlanner() {
   scrollToCurrentWeek();
 
   if (previousSummary) {
-    const candidates = Array.from(plannerBody.querySelectorAll(`td[data-week="${previousSummary.week_from}"][data-cell]`));
+    const candidates = Array.from(plannerBody.querySelectorAll(`td[data-period-key="${previousSummary.period_from}"][data-cell]`));
     const targetCell = candidates.find((cell) => {
       const data = JSON.parse(decodeURIComponent(cell.dataset.cell));
       return Number(data.project_id) === Number(previousSummary.project_id) && data.role === previousSummary.role;
@@ -1558,7 +1671,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           <td class="sticky-col">Errore</td>
           <td class="sticky-col second">Planner</td>
           <td class="sticky-col third coverage warn">KO</td>
-          ${WEEKS.map(() => `<td class="cell-empty"></td>`).join("")}
+          ${PERIODS.map(() => `<td class="cell-empty"></td>`).join("")}
         </tr>
       `;
     }
