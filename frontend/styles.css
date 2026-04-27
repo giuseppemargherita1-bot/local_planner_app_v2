@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   --bg: #eef3f8;
   --card: #ffffff;
   --line: #d7e0ea;
@@ -1011,7 +1011,7 @@ body {
 }
 
 /* Surplus: A > R oppure R0 con A > 0.
-   Il bordo rosso sarà pieno quando app.js assegna cell-surplus. */
+   Il bordo rosso sarÃ  pieno quando app.js assegna cell-surplus. */
 #plannerMatrix tbody td.cell-surplus {
   background: #fff7ed !important;
   box-shadow: inset 0 0 0 2px #dc2626 !important;
@@ -1248,7 +1248,7 @@ body {
   font-weight: 700 !important;
 }
 
-/* SURPLUS: non è mancanza. È allocato oltre fabbisogno o R0 con A>0. */
+/* SURPLUS: non Ã¨ mancanza. Ãˆ allocato oltre fabbisogno o R0 con A>0. */
 #plannerMatrix tbody td.cell-surplus {
   background: #fffaf5 !important;
   box-shadow: inset 0 0 0 2px #dc2626 !important;
@@ -1483,7 +1483,7 @@ body {
   font-weight: 700 !important;
 }
 
-/* SURPLUS: non è scoperto. Cornice rossa, fondo quasi neutro. */
+/* SURPLUS: non Ã¨ scoperto. Cornice rossa, fondo quasi neutro. */
 .planner-matrix tbody td.cell-surplus {
   background: #fffaf5 !important;
   box-shadow: inset 0 0 0 2px #dc2626 !important;
@@ -1522,3 +1522,452 @@ body {
   outline: 1px solid #60a5fa !important;
   outline-offset: -1px !important;
 }
+/* =========================================================
+   Stati celle planner: surplus, EXT, storico
+   ========================================================= */
+
+.planner-matrix tbody td.cell-surplus-border {
+  box-shadow: inset 0 0 0 2px #dc2626;
+}
+
+.planner-matrix tbody td.cell-has-ext {
+  box-shadow: inset 0 0 0 2px #111827;
+}
+
+.planner-matrix tbody td.cell-surplus-border.cell-has-ext {
+  box-shadow:
+    inset 0 0 0 2px #dc2626,
+    inset 0 0 0 4px rgba(17, 24, 39, 0.35);
+}
+
+.cell-ext-corner {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-top: 13px solid #dc2626;
+  border-left: 13px solid transparent;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.cell-ext-corner::after {
+  content: "!";
+  position: absolute;
+  top: -14px;
+  right: 1px;
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.cell-callout-released {
+  color: #6b7280 !important;
+  font-style: italic !important;
+  text-decoration: line-through !important;
+}
+.resource-dual {
+  min-height: 0;
+}
+
+.resource-column {
+  min-height: 0;
+}
+
+.resource-list {
+  max-height: 360px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+}
+
+.resource-item {
+  width: 100%;
+  display: block;
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.resource-item:hover {
+  background: #eff6ff;
+}
+
+.resource-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  background: #f8fafc;
+}
+
+.resource-main {
+  display: block;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.resource-sub {
+  display: block;
+  color: #475569;
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.resource-empty {
+  padding: 8px;
+  color: #64748b;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.resource-status-inactive .resource-main,
+.resource-status-inactive .resource-sub {
+  color: #64748b;
+  font-style: italic;
+  text-decoration: line-through;
+}
+
+.resource-status-unavailable .resource-main,
+.resource-status-unavailable .resource-sub {
+  color: #b91c1c;
+}
+
+.resource-status-partial .resource-main {
+  color: #b45309;
+}
+
+.resource-status-saturated .resource-main {
+  color: #b91c1c;
+}
+
+.resource-status-allocated .resource-main {
+  color: #047857;
+}
+
+.resources-sheet {
+  margin-top: 10px;
+  grid-column: 1 / -1;
+  min-height: 280px;
+}
+
+.resources-sheet-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+}
+
+.resources-sheet-subtitle {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.resources-sheet-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.resources-sheet-actions input {
+  width: 280px;
+  height: 30px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 0 8px;
+}
+
+.resources-sheet-table-wrap {
+  max-height: 520px;
+  overflow: auto;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.resources-sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.resources-sheet-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f1f5f9;
+  border-bottom: 1px solid #cbd5e1;
+  padding: 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.resources-sheet-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 4px;
+  vertical-align: top;
+}
+
+.resources-sheet-id {
+  width: 58px;
+  color: #64748b;
+  font-weight: 700;
+}
+
+.resources-sheet-active-cell {
+  width: 150px;
+}
+
+.resources-sheet-input,
+.resources-sheet-note {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 5px 6px;
+  font-size: 12px;
+  background: #ffffff;
+}
+
+.resources-sheet-note {
+  min-height: 36px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.resources-sheet-empty {
+  color: #64748b;
+  font-style: italic;
+  text-align: center;
+  padding: 14px;
+}
+
+.resources-sheet-ext-row {
+  background: #f8fafc;
+}
+
+.bottom-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #cbd5e1;
+  font-size: 12px;
+}
+
+.bottom-detail-header strong {
+  color: #0f172a;
+}
+
+.bottom-detail-numbers {
+  display: flex;
+  gap: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.bottom-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.bottom-detail-grid-wide {
+  grid-template-columns: 1.25fr 1fr;
+}
+
+.bottom-detail-block {
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 8px;
+  min-width: 0;
+}
+
+.bottom-detail-title {
+  font-weight: 800;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+
+.bottom-detail-title-secondary {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #cbd5e1;
+}
+
+.bottom-detail-muted {
+  color: #64748b;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.bottom-detail-error {
+  color: #b91c1c;
+  font-weight: 800;
+  margin-top: 8px;
+}
+
+.bottom-detail-badges {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.bottom-detail-badges span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bottom-detail-resource-row {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 52px 120px;
+  gap: 6px;
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.bottom-detail-resource-row:last-child {
+  border-bottom: 0;
+}
+
+.bottom-detail-resource-name {
+  font-weight: 700;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-detail-resource-role,
+.bottom-detail-resource-load,
+.bottom-detail-resource-status {
+  color: #334155;
+}
+
+.bottom-detail-resource-history {
+  color: #64748b;
+  font-style: italic;
+  text-decoration: line-through;
+}
+
+.bottom-detail-resource-history .bottom-detail-resource-name,
+.bottom-detail-resource-history .bottom-detail-resource-role,
+.bottom-detail-resource-history .bottom-detail-resource-load,
+.bottom-detail-resource-history .bottom-detail-resource-status {
+  color: #64748b;
+}
+
+.bottom-detail-resource-ext {
+  font-weight: 800;
+}
+
+.bottom-detail-resource-ext .bottom-detail-resource-status {
+  color: #b91c1c;
+  font-weight: 900;
+}
+
+.bottom-overall-row {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 70px;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid #e2e8f0;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.bottom-overall-project {
+  font-weight: 700;
+  color: #0f172a;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-overall-role {
+  color: #475569;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bottom-overall-required {
+  text-align: right;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.bottom-overall-total {
+  display: grid;
+  grid-template-columns: 1fr 70px;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 2px solid #94a3b8;
+  font-weight: 900;
+  color: #0f172a;
+}
+
+
+/* === BOTTOM PANEL CLEAN RESIZE PATCH START ===
+   Obiettivo:
+   - non cambiare zoom/font;
+   - non creare una seconda maniglia;
+   - permettere al pannello sotto esistente di salire molto di piu';
+   - mantenere scroll interno leggibile.
+*/
+
+.planner-bottom {
+  min-height: 140px !important;
+  max-height: 75vh !important;
+  overflow: auto !important;
+  resize: vertical !important;
+}
+
+.bottom-content,
+#plannerBottomDetail {
+  min-height: 0 !important;
+  overflow: auto !important;
+}
+
+.bottom-detail-block {
+  max-height: 62vh !important;
+  overflow: auto !important;
+}
+
+/* Mantieni dimensioni testo compatte, senza zoom artificiale */
+.bottom-detail-header,
+.bottom-detail-title,
+.bottom-detail-numbers,
+.bottom-detail-resource-row,
+.bottom-overall-row {
+  font-size: 12px !important;
+}
+
+/* Se il browser mostra la resize handle nativa, rendila usabile */
+.planner-bottom::-webkit-resizer {
+  background: #94a3b8;
+}
+
+/* === BOTTOM PANEL CLEAN RESIZE PATCH END === */
+

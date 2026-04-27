@@ -1,9 +1,10 @@
-const root = document.documentElement;
+﻿const root = document.documentElement;
 const verticalSplitter = document.getElementById("verticalSplitter");
 const horizontalSplitter = document.getElementById("horizontalSplitter");
 const sideInnerSplitter = document.getElementById("sideInnerSplitter");
 const plannerGridWrap = document.getElementById("plannerGridWrap");
 const plannerBody = document.getElementById("plannerBody");
+const plannerBottomDetail = document.getElementById("plannerBottomDetail");
 
 const plannerHead = document.querySelector("thead");
 
@@ -290,6 +291,73 @@ function normalizeExtRoleLabel(role) {
     .trim();
 }
 
+
+function getProjectById(projectId) {
+  return projectsData.find((project) => Number(project.id) === Number(projectId)) || null;
+}
+
+function isOverallProject(project) {
+  return Number(project?.is_overall || 0) === 1;
+}
+
+function isWorkshopChildProject(project) {
+  return Number(project?.workshop_rollup || 0) === 1 && Number(project?.parent_overall_id || 0) > 0;
+}
+
+function getProjectFirstUsefulPeriod(projectId) {
+  let first = Infinity;
+
+  demandsData.forEach((demand) => {
+    if (Number(demand.project_id) !== Number(projectId)) return;
+    if (Number(demand.quantity || 0) <= 0) return;
+    first = Math.min(first, normalizePeriodKey(demand));
+  });
+
+  allocationsData.forEach((allocation) => {
+    if (Number(allocation.project_id) !== Number(projectId)) return;
+    first = Math.min(first, normalizePeriodKey(allocation));
+  });
+
+  return first === Infinity ? 999999 : first;
+}
+
+function getProjectLastUsefulPeriod(projectId) {
+  let last = 0;
+
+  demandsData.forEach((demand) => {
+    if (Number(demand.project_id) !== Number(projectId)) return;
+    if (Number(demand.quantity || 0) <= 0) return;
+    last = Math.max(last, normalizePeriodKey(demand));
+  });
+
+  allocationsData.forEach((allocation) => {
+    if (Number(allocation.project_id) !== Number(projectId)) return;
+    last = Math.max(last, normalizePeriodKey(allocation));
+  });
+
+  return last;
+}
+
+function projectHasUsefulRows(projectId) {
+  const project = getProjectById(projectId);
+  if (!project) return false;
+  if (isWorkshopChildProject(project)) return false;
+
+  const lastUseful = getProjectLastUsefulPeriod(projectId);
+
+  // Mostra commesse future o passate da poco.
+  // Nasconde commesse finite troppo indietro tipo 382/390.
+  return lastUseful >= CURRENT_PERIOD_KEY - 4;
+}
+
+function hasExtInAssignments(assignments) {
+  return assignments.some((item) => {
+    const resource = getAllocationResource(item);
+    return isExternalResource(resource) || isExternalResource(item);
+  });
+}
+
+
 function isExternalResource(resource) {
   if (!resource) return false;
 
@@ -409,46 +477,169 @@ function isExplicitlyUnavailable(resource) {
   );
 }
 
-function isResourceAvailableForPeriod(resource, periodKey) {
-  if (isExternalResource(resource)) return true;
+function parseItalianDateFromText(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/([0-9]{1,2})\/([0-9]{1,2})\/([0-9]{4})/);
 
-  if (!resource.is_active) return false;
-  if (isExplicitlyUnavailable(resource)) return false;
+  if (!match) {
+    return null;
+  }
+
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  const year = Number(match[3]);
+
+  if (!day || !month || !year) {
+    return null;
+  }
+
+  return new Date(year, month - 1, day);
+}
+
+
+function getResourceEndDate(resource) {
+  const noteText = String(resource?.availability_note || "");
+  const endMatch = noteText.match(/END=([^|]+)/i);
+
+  if (!endMatch) {
+    return null;
+  }
+
+  const rawEnd = String(endMatch[1] || "").trim().toUpperCase();
+
+  if (!rawEnd) {
+    return null;
+  }
+
+  if (
+    rawEnd.includes("INDET") ||
+    rawEnd.includes("INDETERMINATO") ||
+    rawEnd.includes("31/12/2099") ||
+    rawEnd.includes("2099")
+  ) {
+    return null;
+  }
+
+  return parseItalianDateFromText(rawEnd);
+}
+
+
+function isResourceContractEndedForPeriod(resource, periodKey) {
+  if (!resource) {
+    return true;
+  }
+
+  if (isExternalResource(resource)) {
+    return false;
+  }
+
+  if (Number(resource.is_active) !== 1) {
+    return true;
+  }
+
+  const noteText = normalizeRole(resource.availability_note || "");
+
+  if (
+    noteText.includes("FUORI_CONTRATTO") ||
+    noteText.includes("FUORI CONTRATTO") ||
+    noteText.includes("CESSATO") ||
+    noteText.includes("LICENZIATO")
+  ) {
+    return true;
+  }
+
+  const endDate = getResourceEndDate(resource);
+
+  if (!endDate) {
+    return false;
+  }
+
+  const week = weekFromPeriodKey(periodKey);
+  const selectedDate = getWeekStartDate(2026, week);
+
+  return endDate < selectedDate;
+}
+
+
+function isResourceContractEndedForSelection(resource) {
+  const summary = getSelectionSummary();
+
+  if (!summary) {
+    return isResourceContractEndedForPeriod(resource, CURRENT_PERIOD_KEY);
+  }
+
+  return isResourceContractEndedForPeriod(resource, summary.period_from);
+}
+
+function isResourceAvailableForPeriod(resource, periodKey) {
+  if (!resource) {
+    return false;
+  }
+
+  // Gli EXT sono validi per il conteggio A della matrice,
+  // ma vengono nascosti dalla lista "Disponibili" in renderResourceLists().
+  if (isExternalResource(resource)) {
+    return true;
+  }
+
+  if (isResourceContractEndedForPeriod(resource, periodKey)) {
+    return false;
+  }
+
+  if (isExplicitlyUnavailable(resource)) {
+    return false;
+  }
 
   const week = weekFromPeriodKey(periodKey);
   const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
-  if (startWeek !== null && week < startWeek) return false;
+
+  if (startWeek !== null && week < startWeek) {
+    return false;
+  }
 
   return true;
 }
+
+
+
+
 
 function isResourceAvailableForWeek(resource, week) {
   return isResourceAvailableForPeriod(resource, periodKeyFromWeek(week));
 }
 
 function buildAllocationMaps(allocations, resources) {
-  const resourceById = new Map(resources.map((r) => [Number(r.id), r]));
-  const demandRowSet = buildDemandRowSet(demandsData);
+  const resourceById = new Map(resources.map((resource) => [Number(resource.id), resource]));
+
   const totalMap = new Map();
   const internalMap = new Map();
   const externalMap = new Map();
 
   for (const allocation of allocations) {
     const resource = resourceById.get(Number(allocation.resource_id));
-    if (!resource) continue;
+
+    if (!resource) {
+      continue;
+    }
 
     const periodKey = normalizePeriodKey(allocation);
 
-    if (!isResourceAvailableForPeriod(resource, periodKey)) continue;
+    if (!isResourceAvailableForPeriod(resource, periodKey)) {
+      continue;
+    }
 
     const role = normalizeRole(allocation.role || resource.role || "");
-    const rowKey = `${Number(allocation.project_id)}__${role}`;
-
-    if (!demandRowSet.has(rowKey)) continue;
-
     const key = `${Number(allocation.project_id)}__${role}__${periodKey}`;
     const value = Number(allocation.load_percent || 0) / 100;
 
+    if (value <= 0) {
+      continue;
+    }
+
+    // REGOLA CORRETTA DAL VECCHIO PLANNER:
+    // ogni allocazione attiva/valida deve contare in A,
+    // anche se R=0 o se non esiste fabbisogno sulla cella.
+    // In quel caso la cella diventa R0/A1/D-1 = surplus.
     totalMap.set(key, (totalMap.get(key) || 0) + value);
 
     if (isExternalResource(resource)) {
@@ -465,6 +656,8 @@ function buildAllocationMaps(allocations, resources) {
   };
 }
 
+
+
 function buildHistoryMap(historyRows) {
   const map = new Map();
 
@@ -479,13 +672,174 @@ function buildHistoryMap(historyRows) {
   return map;
 }
 
+function rowHasUsefulFutureActivity(projectId, role) {
+  const normalizedRole = normalizeRole(role);
+
+  return PERIODS.some((period) => {
+    if (Number(period.periodKey) < CURRENT_PERIOD_KEY) {
+      return false;
+    }
+
+    const demandFound = demandsData.some((demand) => {
+      return (
+        Number(demand.project_id) === Number(projectId) &&
+        normalizeRole(demand.role || "") === normalizedRole &&
+        normalizePeriodKey(demand) === Number(period.periodKey) &&
+        Number(demand.quantity || 0) > 0
+      );
+    });
+
+    if (demandFound) {
+      return true;
+    }
+
+    const allocationFound = allocationsData.some((allocation) => {
+      if (
+        Number(allocation.project_id) !== Number(projectId) ||
+        normalizeRole(allocation.role || "") !== normalizedRole ||
+        normalizePeriodKey(allocation) !== Number(period.periodKey)
+      ) {
+        return false;
+      }
+
+      const resource = resourcesData.find((item) => Number(item.id) === Number(allocation.resource_id));
+
+      if (!resource) {
+        return false;
+      }
+
+      return isResourceAvailableForPeriod(resource, period.periodKey);
+    });
+
+    return allocationFound;
+  });
+}
+
+
+function rowHasRecentPastActivity(projectId, role) {
+  const normalizedRole = normalizeRole(role);
+  const recentPastStart = CURRENT_PERIOD_KEY - 2;
+
+  return PERIODS.some((period) => {
+    if (
+      Number(period.periodKey) < recentPastStart ||
+      Number(period.periodKey) >= CURRENT_PERIOD_KEY
+    ) {
+      return false;
+    }
+
+    const demandFound = demandsData.some((demand) => {
+      return (
+        Number(demand.project_id) === Number(projectId) &&
+        normalizeRole(demand.role || "") === normalizedRole &&
+        normalizePeriodKey(demand) === Number(period.periodKey) &&
+        Number(demand.quantity || 0) > 0
+      );
+    });
+
+    if (demandFound) {
+      return true;
+    }
+
+    const allocationFound = allocationsData.some((allocation) => {
+      if (
+        Number(allocation.project_id) !== Number(projectId) ||
+        normalizeRole(allocation.role || "") !== normalizedRole ||
+        normalizePeriodKey(allocation) !== Number(period.periodKey)
+      ) {
+        return false;
+      }
+
+      const resource = resourcesData.find((item) => Number(item.id) === Number(allocation.resource_id));
+
+      if (!resource) {
+        return false;
+      }
+
+      return isResourceAvailableForPeriod(resource, period.periodKey);
+    });
+
+    return allocationFound;
+  });
+}
+
+
+function shouldShowPlannerRow(projectId, role) {
+  const showZero = document.querySelector(".inline-check input")?.checked;
+
+  if (showZero) {
+    return true;
+  }
+
+  const project = projectsData.find((item) => Number(item.id) === Number(projectId));
+  const projectName = normalizeRole(project?.name || "");
+
+  if (projectName.includes("OVERALL OFFICINA")) {
+    return true;
+  }
+
+  // Vista operativa standard:
+  // mostra solo righe con attivitÃ  corrente/futura oppure passato recente.
+  // Nasconde commesse finite troppo tempo fa tipo 382/390.
+  return (
+    rowHasUsefulFutureActivity(projectId, role) ||
+    rowHasRecentPastActivity(projectId, role)
+  );
+}
+
+function getFirstUsefulPeriodForRow(projectId, role) {
+  const normalizedRole = normalizeRole(role);
+
+  const usefulPeriods = [];
+
+  demandsData.forEach((demand) => {
+    if (
+      Number(demand.project_id) === Number(projectId) &&
+      normalizeRole(demand.role || "") === normalizedRole &&
+      Number(demand.quantity || 0) > 0
+    ) {
+      usefulPeriods.push(normalizePeriodKey(demand));
+    }
+  });
+
+  allocationsData.forEach((allocation) => {
+    if (
+      Number(allocation.project_id) === Number(projectId) &&
+      normalizeRole(allocation.role || "") === normalizedRole
+    ) {
+      usefulPeriods.push(normalizePeriodKey(allocation));
+    }
+  });
+
+  const futureOrCurrent = usefulPeriods
+    .filter((periodKey) => Number(periodKey) >= CURRENT_PERIOD_KEY)
+    .sort((a, b) => a - b);
+
+  if (futureOrCurrent.length) {
+    return futureOrCurrent[0];
+  }
+
+  const past = usefulPeriods
+    .filter((periodKey) => Number(periodKey) < CURRENT_PERIOD_KEY)
+    .sort((a, b) => b - a);
+
+  if (past.length) {
+    return 9000 + (CURRENT_PERIOD_KEY - past[0]);
+  }
+
+  return 9999;
+}
+
 function buildPlannerRows(projects, demands) {
-  const projectsById = new Map(projects.map((p) => [Number(p.id), p]));
+  const projectsById = new Map(projects.map((project) => [Number(project.id), project]));
   const rowsMap = new Map();
 
   for (const demand of demands) {
     const project = projectsById.get(Number(demand.project_id));
-    if (!project) continue;
+
+    if (!project) {
+      continue;
+    }
 
     const role = normalizeRole(demand.role);
     const rowKey = `${Number(demand.project_id)}__${role}`;
@@ -500,14 +854,75 @@ function buildPlannerRows(projects, demands) {
     }
   }
 
-  const rows = Array.from(rowsMap.values()).sort((a, b) => {
-    if (a.project_name !== b.project_name) return a.project_name.localeCompare(b.project_name);
+  // Manteniamo la correzione APPELLA:
+  // aggiungiamo righe anche da allocazioni R0/A1,
+  // ma solo se la riga Ã¨ utile nella vista operativa.
+  for (const allocation of allocationsData) {
+    const project = projectsById.get(Number(allocation.project_id));
+
+    if (!project) {
+      continue;
+    }
+
+    const resource = resourcesData.find((item) => Number(item.id) === Number(allocation.resource_id));
+
+    if (!resource) {
+      continue;
+    }
+
+    const periodKey = normalizePeriodKey(allocation);
+
+    if (!isResourceAvailableForPeriod(resource, periodKey)) {
+      continue;
+    }
+
+    const role = normalizeRole(allocation.role || resource.role || "");
+
+    if (!role) {
+      continue;
+    }
+
+    const rowKey = `${Number(allocation.project_id)}__${role}`;
+
+    if (!rowsMap.has(rowKey)) {
+      rowsMap.set(rowKey, {
+        row_key: rowKey,
+        project_id: Number(allocation.project_id),
+        project_name: project.name,
+        role,
+      });
+    }
+  }
+
+  let rows = Array.from(rowsMap.values());
+
+  rows = rows.filter((row) => {
+    return shouldShowPlannerRow(row.project_id, row.role);
+  });
+
+  rows.sort((a, b) => {
+    const aFirst = getFirstUsefulPeriodForRow(a.project_id, a.role);
+    const bFirst = getFirstUsefulPeriodForRow(b.project_id, b.role);
+
+    if (aFirst !== bFirst) {
+      return aFirst - bFirst;
+    }
+
+    if (a.project_name !== b.project_name) {
+      return a.project_name.localeCompare(b.project_name);
+    }
+
     return a.role.localeCompare(b.role);
   });
 
-  rowMetaMap = new Map(rows.map((row, idx) => [idx, row]));
+  rowMetaMap = new Map(rows.map((row, index) => [index, row]));
+
   return rows;
 }
+
+
+
+
 
 function getCoverageClass(required, allocated) {
   if (required === 0 && allocated === 0) return "coverage good";
@@ -517,21 +932,24 @@ function getCoverageClass(required, allocated) {
   return "coverage good";
 }
 
-function getCellClass(required, allocated, periodKey, hasHistory, hasAllocationHistory) {
+function getCellClass(required, allocated, periodKey, hasHistory, hasAllocationHistory, hasExt) {
   let cls = "cell-empty planner-cell-clickable";
 
-  if (required > 0 && allocated < required) {
+  if (required === 0 && allocated === 0) {
+    cls = "cell-empty planner-cell-clickable";
+  } else if (allocated < required) {
     cls = "cell-demand planner-cell-clickable";
-  } else if (required > 0 && allocated === required) {
+  } else if (allocated >= required) {
     cls = "cell-ok planner-cell-clickable";
-  } else if (required > 0 && allocated > required) {
-    cls = "cell-surplus planner-cell-clickable";
-  } else if (required === 0 && allocated > 0) {
-    cls = "cell-surplus planner-cell-clickable";
+  }
+
+  if (allocated > required) {
+    cls += " cell-surplus-border";
   }
 
   if (periodKey === CURRENT_PERIOD_KEY) cls += " current-col";
   if (hasHistory || hasAllocationHistory) cls += " cell-history";
+  if (hasExt) cls += " cell-has-ext";
 
   return cls;
 }
@@ -614,6 +1032,224 @@ function updateSidePanelFromSelection() {
   detailDiff.value = formatNumber(summary.required - summary.allocated);
 
   renderResourceLists();
+  renderBottomDetailFromSelection(summary);
+}
+function getSingleSelectedCellData() {
+  if (!selectedCells.length) return null;
+
+  try {
+    return JSON.parse(decodeURIComponent(selectedCells[0].dataset.cell));
+  } catch (error) {
+    console.error("Errore lettura dati cella selezionata", error);
+    return null;
+  }
+}
+
+function resourceDisplayName(item) {
+  const rawName =
+    item.resource_name ||
+    item.resourceName ||
+    item.name ||
+    "";
+
+  return shortResourceName(rawName);
+}
+
+function resourceStatusLabel(item) {
+  const status = normalizeRole(item.status || item.reason || "");
+
+  if (item.external) return "EXT";
+  if (status.includes("FUORI") || status.includes("CESS")) return "FUORI_CONTRATTO";
+  if (status.includes("INDISP")) return "INDISP";
+  if (status.includes("STORICO")) return "STORICO";
+
+  return status || "ACTIVE";
+}
+
+function renderResourceDetailLines(resources, rowRole, periodKey, historical = false) {
+  if (!Array.isArray(resources) || !resources.length) {
+    return `<div class="bottom-muted">Nessuna risorsa ${historical ? "storica" : "attiva"}.</div>`;
+  }
+
+  return resources.map((item) => {
+    const isExt = Boolean(item.external) || isExternalResource(item);
+    const name = isExt
+      ? getExtDisplayName(item, rowRole, periodKey)
+      : resourceDisplayName(item);
+
+    const realRole = item.resource_role || item.resourceRole || item.role || "";
+    const mansione = isExt ? "EXT" : mansioneLabel(rowRole, realRole);
+    const status = resourceStatusLabel(item);
+    const load = historical ? "0:1" : (item.display_weight || formatLoad(item.load_percent || item.loadPercent || 100));
+
+    const classes = [
+      "bottom-resource-row",
+      historical ? "bottom-resource-history" : "",
+      isExt ? "bottom-resource-ext" : "",
+    ].join(" ");
+
+    return `
+      <div class="${classes}">
+        <div class="bottom-resource-name">${escapeHtml(name)}</div>
+        <div class="bottom-resource-role">${escapeHtml(mansione)}</div>
+        <div class="bottom-resource-load">${escapeHtml(load)}</div>
+        <div class="bottom-resource-status">${escapeHtml(status)}</div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function renderBottomDetailFromSelection(summary) {
+  if (!plannerBottomDetail || !summary) return;
+
+  const cellData = getSingleSelectedCellData();
+
+  if (!cellData) {
+    plannerBottomDetail.innerHTML = `
+      <div class="bottom-muted">Seleziona una cella per vedere dettaglio, storico e note operative.</div>
+    `;
+    return;
+  }
+
+  const isOverall = String(summary.project_name || "").toUpperCase().includes("OVERALL OFFICINA");
+
+  plannerBottomDetail.innerHTML = `
+    <div class="bottom-detail-header">
+      <div>
+        <strong>${escapeHtml(summary.project_name)}</strong>
+        <span> / ${escapeHtml(summary.role)}</span>
+        <span> / W${String(summary.week_from).padStart(2, "0")}</span>
+      </div>
+      <div>
+        R${formatNumber(summary.required)}
+        &nbsp; A${formatNumber(summary.allocated)}
+        &nbsp; D${formatNumber(summary.required - summary.allocated)}
+      </div>
+    </div>
+    <div class="bottom-muted">Caricamento dettaglio...</div>
+  `;
+
+  if (isOverall) {
+    await renderOverallDetailInBottom(summary, cellData);
+    return;
+  }
+
+  renderNormalCellDetailInBottom(summary, cellData);
+}
+
+function renderNormalCellDetailInBottom(summary, cellData) {
+  const activeResources = Array.isArray(cellData.active_resources) ? cellData.active_resources : [];
+  const historicalResources = Array.isArray(cellData.historical_resources) ? cellData.historical_resources : [];
+  const badges = Array.isArray(cellData.badges) ? cellData.badges : [];
+
+  const badgesHtml = badges.length
+    ? `<div class="bottom-badges">${badges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}</div>`
+    : "";
+
+  plannerBottomDetail.innerHTML = `
+    <div class="bottom-detail-header">
+      <div>
+        <strong>${escapeHtml(summary.project_name)}</strong>
+        <span> / ${escapeHtml(summary.role)}</span>
+        <span> / W${String(summary.week_from).padStart(2, "0")}</span>
+      </div>
+      <div>
+        R${formatNumber(summary.required)}
+        &nbsp; A${formatNumber(summary.allocated)}
+        &nbsp; D${formatNumber(summary.required - summary.allocated)}
+      </div>
+    </div>
+
+    ${badgesHtml}
+
+    <div class="bottom-detail-grid">
+      <div class="bottom-detail-block">
+        <div class="bottom-detail-title">Risorse attive conteggiate</div>
+        ${renderResourceDetailLines(activeResources, summary.role, summary.period_from, false)}
+      </div>
+
+      <div class="bottom-detail-block">
+        <div class="bottom-detail-title">Storico / fuori contratto / non conteggiati</div>
+        ${renderResourceDetailLines(historicalResources, summary.role, summary.period_from, true)}
+      </div>
+    </div>
+  `;
+}
+
+async function renderOverallDetailInBottom(summary, cellData) {
+  try {
+    const params = new URLSearchParams({
+      project_id: String(summary.project_id),
+      role: summary.role,
+      week: String(summary.week_from),
+    });
+
+    const data = await fetchJson(`/api/workshop-breakdown?${params.toString()}`);
+    const sources = Array.isArray(data.sources) ? data.sources : [];
+
+    const sourceRows = sources.length
+      ? sources.map((source) => {
+          return `
+            <div class="bottom-overall-row">
+              <div class="bottom-overall-project">${escapeHtml(source.project_name || "")}</div>
+              <div class="bottom-overall-role">${escapeHtml(source.role || summary.role)}</div>
+              <div class="bottom-overall-required">R${formatNumber(source.required || 0)}</div>
+            </div>
+          `;
+        }).join("")
+      : `<div class="bottom-muted">Nessuna sottocommessa trovata per questa cella.</div>`;
+
+    const activeResources = Array.isArray(cellData.active_resources) ? cellData.active_resources : [];
+    const historicalResources = Array.isArray(cellData.historical_resources) ? cellData.historical_resources : [];
+
+    plannerBottomDetail.innerHTML = `
+      <div class="bottom-detail-header">
+        <div>
+          <strong>${escapeHtml(summary.project_name)}</strong>
+          <span> / ${escapeHtml(summary.role)}</span>
+          <span> / W${String(summary.week_from).padStart(2, "0")}</span>
+        </div>
+        <div>
+          R${formatNumber(summary.required)}
+          &nbsp; A${formatNumber(summary.allocated)}
+          &nbsp; D${formatNumber(summary.required - summary.allocated)}
+        </div>
+      </div>
+
+      <div class="bottom-detail-grid bottom-detail-grid-wide">
+        <div class="bottom-detail-block">
+          <div class="bottom-detail-title">Dettaglio sottocommesse officina</div>
+          ${sourceRows}
+          <div class="bottom-overall-total">
+            <div>Totale OVERALL</div>
+            <div>R${formatNumber(data.total_required || 0)}</div>
+          </div>
+        </div>
+
+        <div class="bottom-detail-block">
+          <div class="bottom-detail-title">Allocazioni su OVERALL OFFICINA</div>
+          ${renderResourceDetailLines(activeResources, summary.role, summary.period_from, false)}
+
+          <div class="bottom-detail-title bottom-detail-title-secondary">
+            Storico / fuori contratto
+          </div>
+          ${renderResourceDetailLines(historicalResources, summary.role, summary.period_from, true)}
+        </div>
+      </div>
+    `;
+  } catch (error) {
+    console.error(error);
+    plannerBottomDetail.innerHTML = `
+      <div class="bottom-detail-header">
+        <div>
+          <strong>${escapeHtml(summary.project_name)}</strong>
+          <span> / ${escapeHtml(summary.role)}</span>
+          <span> / W${String(summary.week_from).padStart(2, "0")}</span>
+        </div>
+      </div>
+      <div class="bottom-error">Errore caricamento dettaglio OVERALL OFFICINA.</div>
+    `;
+  }
 }
 
 function clearCellSelectionVisuals() {
@@ -793,18 +1429,40 @@ function getAssignedResourcesForSelection() {
 
 function getResourceStatus(resource) {
   const summary = getSelectionSummary();
-  if (!summary) return "free";
 
-  if (isExternalResource(resource)) return "free";
+  if (!resource) {
+    return "inactive";
+  }
 
-  if (!resource.is_active) return "inactive";
-  if (isExplicitlyUnavailable(resource)) return "unavailable";
+  if (isExternalResource(resource)) {
+    return "external";
+  }
+
+  if (isResourceContractEndedForSelection(resource)) {
+    return "inactive";
+  }
+
+  if (isExplicitlyUnavailable(resource)) {
+    return "unavailable";
+  }
+
+  if (!summary) {
+    return "free";
+  }
 
   const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
-  if (startWeek !== null && summary.week_from < startWeek) return "future";
 
-  const assigned = getAssignedResourcesForSelection().some((r) => Number(r.id) === Number(resource.id));
-  if (assigned) return "allocated";
+  if (startWeek !== null && summary.week_from < startWeek) {
+    return "future";
+  }
+
+  const assigned = getAssignedResourcesForSelection().some((assignedResource) => {
+    return Number(assignedResource.id) === Number(resource.id);
+  });
+
+  if (assigned) {
+    return "allocated";
+  }
 
   const demandRowSet = buildDemandRowSet(demandsData);
 
@@ -823,8 +1481,13 @@ function getResourceStatus(resource) {
 
   const values = Array.from(maxPerPeriod.values());
 
-  if (values.some((count) => count >= 2)) return "saturated";
-  if (values.some((count) => count === 1)) return "partial";
+  if (values.some((count) => count >= 2)) {
+    return "saturated";
+  }
+
+  if (values.some((count) => count === 1)) {
+    return "partial";
+  }
 
   const historical = getResourceAllocationsForSelectedPeriods(resource.id).filter((allocation) => {
     const allocationRole = normalizeRole(allocation.role || "");
@@ -832,10 +1495,16 @@ function getResourceStatus(resource) {
     return !demandRowSet.has(rowKey);
   });
 
-  if (historical.length > 0) return "history";
+  if (historical.length > 0) {
+    return "history";
+  }
 
   return "free";
 }
+
+
+
+
 
 function allocationShortLabel(allocation) {
   const project = allocation.project_name || `Progetto ${allocation.project_id}`;
@@ -860,37 +1529,146 @@ function getAllocationLocationText(resource, onlyHistorical = false) {
   return allocations.map(allocationShortLabel).join(" / ");
 }
 
+function getAssignedResourceInfo(resource) {
+  const summary = getSelectionSummary();
+
+  if (!summary || !resource) {
+    return "ASSEGNATA";
+  }
+
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
+
+  const rows = allocationsData.filter((allocation) => {
+    return (
+      Number(allocation.resource_id) === Number(resource.id) &&
+      Number(allocation.project_id) === Number(summary.project_id) &&
+      normalizeRole(allocation.role || "") === summary.role &&
+      selectedPeriodKeys.has(normalizePeriodKey(allocation))
+    );
+  });
+
+  if (!rows.length) {
+    return "ASSEGNATA";
+  }
+
+  const loads = [...new Set(rows.map((allocation) => formatLoad(allocation.load_percent || allocation.loadPercent || 100)))];
+  const weeks = rows
+    .map((allocation) => weekFromPeriodKey(normalizePeriodKey(allocation)))
+    .sort((a, b) => a - b);
+
+  const firstWeek = weeks[0];
+  const lastWeek = weeks[weeks.length - 1];
+  const weekText = firstWeek === lastWeek
+    ? `W${String(firstWeek).padStart(2, "0")}`
+    : `W${String(firstWeek).padStart(2, "0")}-W${String(lastWeek).padStart(2, "0")}`;
+
+  return `${summary.role} | ${loads.join("+")} | ${weekText}`;
+}
+
+
+function getResourceBusyInfo(resource) {
+  const summary = getSelectionSummary();
+
+  if (!summary || !resource) {
+    return "";
+  }
+
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
+
+  const rows = allocationsData.filter((allocation) => {
+    return (
+      Number(allocation.resource_id) === Number(resource.id) &&
+      selectedPeriodKeys.has(normalizePeriodKey(allocation))
+    );
+  });
+
+  if (!rows.length) {
+    return "";
+  }
+
+  const byProjectRole = new Map();
+
+  rows.forEach((allocation) => {
+    const projectName = allocation.project_name || `Progetto ${allocation.project_id}`;
+    const role = allocation.role || "";
+    const key = `${projectName}__${role}`;
+
+    if (!byProjectRole.has(key)) {
+      byProjectRole.set(key, {
+        projectName,
+        role,
+        weeks: [],
+        loads: [],
+      });
+    }
+
+    const bucket = byProjectRole.get(key);
+    bucket.weeks.push(weekFromPeriodKey(normalizePeriodKey(allocation)));
+    bucket.loads.push(formatLoad(allocation.load_percent || allocation.loadPercent || 100));
+  });
+
+  return Array.from(byProjectRole.values()).map((bucket) => {
+    const weeks = bucket.weeks.sort((a, b) => a - b);
+    const firstWeek = weeks[0];
+    const lastWeek = weeks[weeks.length - 1];
+    const weekText = firstWeek === lastWeek
+      ? `W${String(firstWeek).padStart(2, "0")}`
+      : `W${String(firstWeek).padStart(2, "0")}-W${String(lastWeek).padStart(2, "0")}`;
+
+    const loads = [...new Set(bucket.loads)];
+
+    return `${bucket.projectName} | ${bucket.role} | ${loads.join("+")} | ${weekText}`;
+  }).join(" / ");
+}
+
 function getResourceShortInfo(resource, status) {
-  if (isExternalResource(resource)) return "EXT";
-  if (status === "inactive") return "CESSATO";
-  if (status === "unavailable") return "INDISP";
+  if (status === "external") {
+    return "EXT";
+  }
+
+  if (status === "inactive") {
+    const endDate = getResourceEndDate(resource);
+
+    if (endDate) {
+      const day = String(endDate.getDate()).padStart(2, "0");
+      const month = String(endDate.getMonth() + 1).padStart(2, "0");
+      const year = endDate.getFullYear();
+      return `CESSATO DAL ${day}/${month}/${year}`;
+    }
+
+    return "CESSATO / FUORI CONTRATTO";
+  }
+
+  if (status === "unavailable") {
+    return "INDISPONIBILE";
+  }
+
   if (status === "future") {
-    const startWeek = parseHiringStartWeekFromNote(resource.availability_note);
-    return `ASSUNZIONE W${String(startWeek).padStart(2, "0")}`;
+    return "NON ANCORA DISPONIBILE";
   }
 
   if (status === "allocated") {
-    const where = getAllocationLocationText(resource);
-    return where ? `ASSEGNATO: ${where}` : "ASSEGNATO";
-  }
-
-  if (status === "partial") {
-    const where = getAllocationLocationText(resource);
-    return where ? `PARZIALE: ${where}` : "PARZIALE";
+    return getAssignedResourceInfo(resource);
   }
 
   if (status === "saturated") {
-    const where = getAllocationLocationText(resource);
-    return where ? `SATURO: ${where}` : "SATURO";
+    return getResourceBusyInfo(resource) || "SATURA";
+  }
+
+  if (status === "partial") {
+    return getResourceBusyInfo(resource) || "PARZIALE";
   }
 
   if (status === "history") {
-    const where = getAllocationLocationText(resource, true);
-    return where ? `STORICO: ${where}` : "STORICO";
+    return "SOLO STORICO";
   }
 
-  return "";
+  return "DISPONIBILE";
 }
+
+
+
+
 
 function getResourceTooltip(resource, status) {
   if (isExternalResource(resource)) return "Risorsa esterna virtuale";
@@ -949,54 +1727,162 @@ function showMessageDialog(title, message) {
 }
 
 function renderResourceLists() {
-  if (!assignedResourceList || !availableResourceList) return;
-
-  const summary = getSelectionSummary();
-  if (!summary) {
-    assignedResourceList.innerHTML = "";
-    availableResourceList.innerHTML = "";
+  if (!assignedResourceList || !availableResourceList) {
     return;
   }
 
-  const assigned = getAssignedResourcesForSelection();
-  const assignedIds = new Set(assigned.map((r) => Number(r.id)));
+  const summary = getSelectionSummary();
 
-  const search = resourceSearchInput?.value?.trim() || "";
-  const showInactive = !!showInactiveToggle?.checked;
+  assignedResourceList.innerHTML = "";
+  availableResourceList.innerHTML = "";
 
-  const visibleAssigned = assigned.filter((resource) => matchesResourceSearch(resource, search));
+  if (!summary) {
+    assignedResourceList.innerHTML = `<div class="resource-empty">Seleziona una cella.</div>`;
+    availableResourceList.innerHTML = `<div class="resource-empty">Seleziona una cella.</div>`;
+    return;
+  }
 
-  const visibleAvailable = resourcesData.filter((resource) => {
-    if (assignedIds.has(Number(resource.id))) return false;
-    if (!showInactive && !resource.is_active && !isExternalResource(resource)) return false;
-    return matchesResourceSearch(resource, search);
+  const searchText = normalizeRole(resourceSearchInput ? resourceSearchInput.value : "");
+  const showInactive = Boolean(showInactiveToggle && showInactiveToggle.checked);
+  const selectedPeriodKeys = getSelectedPeriodKeysSet();
+
+  // Come nel vecchio planner:
+  // le allocazioni EXT sono vere allocazioni e devono essere mostrate tra le assegnate,
+  // ma non devono comparire tra le risorse disponibili.
+  const assignedAllocations = allocationsData.filter((allocation) => {
+    const allocationRole = normalizeRole(allocation.role || "");
+
+    return (
+      Number(allocation.project_id) === Number(summary.project_id) &&
+      allocationRole === summary.role &&
+      selectedPeriodKeys.has(normalizePeriodKey(allocation))
+    );
   });
 
-  assignedResourceList.innerHTML = visibleAssigned.length
-    ? visibleAssigned.map((resource) => renderResourceItem(resource, "allocated")).join("")
-    : `<div class="resource-item resource-unavailable">Nessuna risorsa assegnata</div>`;
+  if (!assignedAllocations.length) {
+    assignedResourceList.innerHTML = `<div class="resource-empty">Nessuna risorsa assegnata</div>`;
+  } else {
+    assignedResourceList.innerHTML = assignedAllocations.map((allocation) => {
+      const resource = getAllocationResource(allocation);
+      const isExt = isExternalResource(resource) || isExternalResource(allocation);
+      const status = isExt ? "external" : getResourceStatus(resource);
+      const name = isExt
+        ? getExtDisplayName(allocation, summary.role, normalizePeriodKey(allocation))
+        : (resource.name || allocation.resource_name || "");
 
-  availableResourceList.innerHTML = visibleAvailable.length
-    ? visibleAvailable.map((resource) => renderResourceItem(resource, getResourceStatus(resource))).join("")
-    : `<div class="resource-item resource-unavailable">Nessuna risorsa disponibile</div>`;
+      const load = formatLoad(allocation.load_percent || allocation.loadPercent || 100);
+      const week = weekFromPeriodKey(normalizePeriodKey(allocation));
+      const role = resource.role || allocation.resource_role || allocation.role || "";
 
-  assignedResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
-    item.addEventListener("dblclick", async () => {
-      const resourceId = Number(item.dataset.resourceId);
-      await removeResourceFromSelection(resourceId);
-    });
+      return `
+        <button
+          class="resource-item resource-status-${escapeHtml(status)}"
+          type="button"
+          data-resource-id="${Number(resource.id || allocation.resource_id || 0)}"
+        >
+          <span class="resource-main">${escapeHtml(name)}</span>
+          <span class="resource-sub">
+            ${escapeHtml(role)} | ${escapeHtml(load)} | W${String(week).padStart(2, "0")}
+          </span>
+        </button>
+      `;
+    }).join("");
+  }
+
+  const assignedIds = new Set(
+    assignedAllocations.map((allocation) => Number(allocation.resource_id))
+  );
+
+  const availableResources = resourcesData.filter((resource) => {
+    if (!resource) {
+      return false;
+    }
+
+    // EXT nascosti dalla lista disponibili.
+    // Verranno aggiunti in seguito solo dal pulsante "Usa EXT".
+    if (isExternalResource(resource)) {
+      return false;
+    }
+
+    const status = getResourceStatus(resource);
+
+    if (!showInactive && (status === "inactive" || status === "unavailable")) {
+      return false;
+    }
+
+    if (assignedIds.has(Number(resource.id))) {
+      return false;
+    }
+
+    if (searchText) {
+      const haystack = normalizeRole(
+        `${resource.name || ""} ${resource.role || ""} ${resource.availability_note || ""}`
+      );
+
+      if (!haystack.includes(searchText)) {
+        return false;
+      }
+    }
+
+    return true;
   });
 
-  availableResourceList.querySelectorAll("[data-resource-id]").forEach((item) => {
-    item.addEventListener("dblclick", async () => {
-      const status = item.dataset.resourceStatus;
-      if (status === "inactive" || status === "unavailable" || status === "future") return;
+  if (!availableResources.length) {
+    availableResourceList.innerHTML = `<div class="resource-empty">Nessuna risorsa disponibile</div>`;
+    return;
+  }
 
-      const resourceId = Number(item.dataset.resourceId);
-      await handleAvailableResourceDoubleClick(resourceId);
+  availableResourceList.innerHTML = availableResources.map((resource) => {
+    const status = getResourceStatus(resource);
+    const info = getResourceShortInfo(resource, status);
+    const disabled = status === "inactive" || status === "unavailable";
+
+    return `
+      <button
+        class="resource-item resource-status-${escapeHtml(status)}"
+        type="button"
+        data-resource-id="${Number(resource.id)}"
+        ${disabled ? "disabled" : ""}
+      >
+        <span class="resource-main">${escapeHtml(resource.name || "")}</span>
+        <span class="resource-sub">${escapeHtml(resource.role || "")} | ${escapeHtml(info)}</span>
+      </button>
+    `;
+  }).join("");
+
+  availableResourceList.querySelectorAll(".resource-item:not([disabled])").forEach((button) => {
+    button.addEventListener("dblclick", async () => {
+      const resourceId = Number(button.dataset.resourceId || 0);
+      if (!resourceId || !summary) return;
+
+      try {
+        await fetchJson("/api/allocations/assign-range", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            resource_id: resourceId,
+            project_id: summary.project_id,
+            role: summary.role,
+            week_from: summary.week_from,
+            week_to: summary.week_to,
+            hours: 40,
+            load_percent: 100,
+            note: "",
+          }),
+        });
+
+        await loadAll();
+      } catch (error) {
+        console.error(error);
+        alert("Errore assegnazione risorsa.");
+      }
     });
   });
 }
+
+
 
 function showConflictDialog(title, bodyHtml, actions) {
   closeConflictDialog();
@@ -1078,8 +1964,8 @@ async function handleAvailableResourceDoubleClick(resourceId) {
 
     if (conflicts.length > 0) {
       showConflictDialog(
-        "Conflitto su più settimane",
-        "La risorsa è già allocata in almeno una delle settimane selezionate.<br>Gestisci una settimana alla volta.",
+        "Conflitto su piÃ¹ settimane",
+        "La risorsa Ã¨ giÃ  allocata in almeno una delle settimane selezionate.<br>Gestisci una settimana alla volta.",
         [{ label: "OK", primary: true, handler: async () => {} }],
       );
       return;
@@ -1106,9 +1992,9 @@ async function handleAvailableResourceDoubleClick(resourceId) {
     const old = existing[0];
 
     showConflictDialog(
-      "Risorsa già allocata",
+      "Risorsa giÃ  allocata",
       `
-        <p><strong>${escapeHtml(resource.name)}</strong> è già allocato su:</p>
+        <p><strong>${escapeHtml(resource.name)}</strong> Ã¨ giÃ  allocato su:</p>
         <p>${escapeHtml(allocationLabel(old))}</p>
         <p>Cosa vuoi fare?</p>
       `,
@@ -1134,7 +2020,7 @@ async function handleAvailableResourceDoubleClick(resourceId) {
   }
 
   const body = `
-    <p><strong>${escapeHtml(resource.name)}</strong> è già allocato su 2 commesse:</p>
+    <p><strong>${escapeHtml(resource.name)}</strong> Ã¨ giÃ  allocato su 2 commesse:</p>
     ${existing.map((item) => `<p>${escapeHtml(allocationLabel(item))}</p>`).join("")}
     <p>Scegli cosa tenere.</p>
   `;
@@ -1341,7 +2227,7 @@ function buildCellCalloutHtml(projectName, role, periodKey, assignments, release
   }
 
   if (released.length) {
-    parts.push(`<div class="cell-callout-section">Non più conteggiati</div>`);
+    parts.push(`<div class="cell-callout-section">Non piÃ¹ conteggiati</div>`);
     released.forEach((item) => {
       const line = `${formatAssignmentLine(item, role, periodKey)} | ${item.reason || "storico"}`;
       parts.push(`<div class="cell-callout-line cell-callout-released">${escapeHtml(line)}</div>`);
@@ -1352,7 +2238,7 @@ function buildCellCalloutHtml(projectName, role, periodKey, assignments, release
     const latest = demandHistoryRows[0];
     parts.push(`<div class="cell-callout-section">Storico fabbisogno</div>`);
     parts.push(
-      `<div class="cell-callout-line">${escapeHtml(latest.old_quantity)} → ${escapeHtml(latest.new_quantity)} | ${escapeHtml(latest.created_at || "")}</div>`
+      `<div class="cell-callout-line">${escapeHtml(latest.old_quantity)} â†’ ${escapeHtml(latest.new_quantity)} | ${escapeHtml(latest.created_at || "")}</div>`
     );
   }
 
@@ -1516,6 +2402,7 @@ function renderPlanner() {
       const hasHistory = historyRows.length > 0;
       const hasAllocationHistory = releasedRows.length > 0;
       const assignments = getCellAssignments(row.project_id, row.role, period.periodKey);
+      const hasExt = hasExtInAssignments(assignments);
 
       totalRequired += required;
       totalAllocated += allocated;
@@ -1541,16 +2428,17 @@ function renderPlanner() {
 
       return `
         <td
-          class="${getCellClass(required, allocated, period.periodKey, hasHistory, hasAllocationHistory)}"
+          class="${getCellClass(required, allocated, period.periodKey, hasHistory, hasAllocationHistory, hasExt)}"
           data-cell='${payload}'
           data-callout='${calloutHtml}'
           data-row-index="${rowIndex}"
           data-week="${period.week}"
           data-period-key="${period.periodKey}"
         >
+          ${hasExt ? `<span class="cell-ext-corner">!</span>` : ""}
           R${formatNumber(required)}<br>
           A${allocatedDisplay}<br>
-          D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">↺</span>` : ""}
+          D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">â†º</span>` : ""}
         </td>
       `;
     }).join("");
@@ -1677,3 +2565,1209 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 });
+
+// === RISORSE SHEET PATCH START ===
+(function enableResourcesSheetPatch() {
+  function qs(id) {
+    return document.getElementById(id);
+  }
+
+  function safeNormalize(value) {
+    if (typeof normalizeRole === "function") {
+      return normalizeRole(value);
+    }
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeEscape(value) {
+    if (typeof escapeHtml === "function") {
+      return escapeHtml(value);
+    }
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function getResourcesArray() {
+    if (Array.isArray(window.resourcesData)) return window.resourcesData;
+    try {
+      if (Array.isArray(resourcesData)) return resourcesData;
+    } catch (error) {
+      return [];
+    }
+    return [];
+  }
+
+  async function getFreshResources() {
+    try {
+      const data = await fetchJson("/api/resources");
+      if (Array.isArray(data)) {
+        try {
+          resourcesData = data;
+        } catch (error) {
+          window.resourcesData = data;
+        }
+        return data;
+      }
+    } catch (error) {
+      console.error("Errore lettura /api/resources", error);
+    }
+
+    return getResourcesArray();
+  }
+
+  function isExtResourceLocal(resource) {
+    if (typeof isExternalResource === "function") {
+      return isExternalResource(resource);
+    }
+
+    const text = safeNormalize(`${resource?.name || ""} ${resource?.role || ""} ${resource?.availability_note || ""}`);
+    return text.includes("-EXT") || text.includes("EMPLOYER=EXT") || text.includes(" EXT ");
+  }
+
+  function openResourcesSheet() {
+    const sheet = qs("resourcesSheet");
+    if (!sheet) {
+      alert("Foglio risorse non trovato nel layout.");
+      return;
+    }
+
+    sheet.hidden = false;
+    renderResourcesSheet();
+
+    setTimeout(() => {
+      sheet.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }
+
+  function closeResourcesSheet() {
+    const sheet = qs("resourcesSheet");
+    if (sheet) sheet.hidden = true;
+  }
+
+  async function reloadResourcesSheet() {
+    await getFreshResources();
+    renderResourcesSheet();
+  }
+
+  function renderResourcesSheet() {
+    const body = qs("resourcesSheetBody");
+    const search = qs("resourcesSheetSearch");
+
+    if (!body) return;
+
+    const resources = getResourcesArray();
+    const searchText = safeNormalize(search ? search.value : "");
+
+    const rows = resources
+      .filter((resource) => {
+        if (!searchText) return true;
+        const haystack = safeNormalize(
+          `${resource.id || ""} ${resource.name || ""} ${resource.role || ""} ${resource.availability_note || ""}`
+        );
+        return haystack.includes(searchText);
+      })
+      .sort((a, b) => {
+        const aExt = isExtResourceLocal(a) ? 1 : 0;
+        const bExt = isExtResourceLocal(b) ? 1 : 0;
+        if (aExt !== bExt) return aExt - bExt;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+
+    if (!rows.length) {
+      body.innerHTML = `
+        <tr>
+          <td colspan="5" class="resources-sheet-empty">Nessuna risorsa trovata.</td>
+        </tr>
+      `;
+      return;
+    }
+
+    body.innerHTML = rows.map((resource) => {
+      const id = Number(resource.id || 0);
+      const active = Number(resource.is_active) === 1;
+      const extClass = isExtResourceLocal(resource) ? " resources-sheet-ext-row" : "";
+
+      return `
+        <tr data-resource-id="${id}" class="${extClass}">
+          <td class="resources-sheet-id">${id}</td>
+          <td>
+            <input class="resources-sheet-input" data-field="name" value="${safeEscape(resource.name || "")}" />
+          </td>
+          <td>
+            <input class="resources-sheet-input" data-field="role" value="${safeEscape(resource.role || "")}" />
+          </td>
+          <td class="resources-sheet-active-cell">
+            <select class="resources-sheet-input" data-field="is_active">
+              <option value="1" ${active ? "selected" : ""}>Attiva</option>
+              <option value="0" ${!active ? "selected" : ""}>Cessata/Fuori contratto</option>
+            </select>
+          </td>
+          <td>
+            <textarea class="resources-sheet-note" data-field="availability_note">${safeEscape(resource.availability_note || "")}</textarea>
+          </td>
+        </tr>
+      `;
+    }).join("");
+  }
+
+  function collectResourcesSheetChanges() {
+    const body = qs("resourcesSheetBody");
+    if (!body) return [];
+
+    const resources = getResourcesArray();
+    const changes = [];
+
+    body.querySelectorAll("tr[data-resource-id]").forEach((row) => {
+      const id = Number(row.dataset.resourceId || 0);
+      const original = resources.find((resource) => Number(resource.id) === id);
+      if (!id || !original) return;
+
+      const getValue = (field) => {
+        const input = row.querySelector(`[data-field="${field}"]`);
+        return input ? input.value : "";
+      };
+
+      const next = {
+        id,
+        name: getValue("name").trim(),
+        role: getValue("role").trim(),
+        is_active: Number(getValue("is_active")),
+        availability_note: getValue("availability_note").trim(),
+      };
+
+      const changed =
+        String(original.name || "") !== next.name ||
+        String(original.role || "") !== next.role ||
+        Number(original.is_active || 0) !== next.is_active ||
+        String(original.availability_note || "") !== next.availability_note;
+
+      if (changed) changes.push(next);
+    });
+
+    return changes;
+  }
+
+  async function saveResourcesSheet() {
+    const changes = collectResourcesSheetChanges();
+
+    if (!changes.length) {
+      alert("Nessuna modifica da salvare.");
+      return;
+    }
+
+    if (!confirm(`Salvare ${changes.length} modifica/e risorsa?`)) {
+      return;
+    }
+
+    try {
+      for (const resource of changes) {
+        await fetchJson(`/api/resources/${resource.id}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: resource.name,
+            role: resource.role,
+            is_active: resource.is_active,
+            availability_note: resource.availability_note,
+          }),
+        });
+      }
+
+      if (typeof loadAll === "function") {
+        await loadAll();
+      } else {
+        await getFreshResources();
+      }
+
+      renderResourcesSheet();
+      alert("Risorse salvate.");
+    } catch (error) {
+      console.error(error);
+      alert("Errore salvataggio risorse. Serve abilitare/controllare PUT /api/resources/{id} nel backend.");
+    }
+  }
+
+  function bindResourcesSheetPatch() {
+    const topbar = document.querySelector(".topbar-actions");
+    const sheet = qs("resourcesSheet");
+
+    if (topbar && !qs("topResourcesBtn")) {
+      const buttons = Array.from(topbar.querySelectorAll("button"));
+      const resourcesButton = buttons.find((button) => String(button.textContent || "").trim().toUpperCase() === "RISORSE");
+      const refreshButton = buttons.find((button) => String(button.textContent || "").trim().toUpperCase() === "AGGIORNA");
+
+      if (resourcesButton) resourcesButton.id = "topResourcesBtn";
+      if (refreshButton) refreshButton.id = "topRefreshBtn";
+    }
+
+    const topResourcesBtn = qs("topResourcesBtn");
+    const topRefreshBtn = qs("topRefreshBtn");
+    const closeBtn = qs("resourcesSheetCloseBtn");
+    const reloadBtn = qs("resourcesSheetReloadBtn");
+    const saveBtn = qs("resourcesSheetSaveBtn");
+    const search = qs("resourcesSheetSearch");
+
+    if (topResourcesBtn && !topResourcesBtn.dataset.resourcesSheetBound) {
+      topResourcesBtn.dataset.resourcesSheetBound = "1";
+      topResourcesBtn.addEventListener("click", openResourcesSheet);
+    }
+
+    if (topRefreshBtn && !topRefreshBtn.dataset.resourcesSheetBound) {
+      topRefreshBtn.dataset.resourcesSheetBound = "1";
+      topRefreshBtn.addEventListener("click", async () => {
+        if (typeof loadAll === "function") {
+          await loadAll();
+        } else {
+          await getFreshResources();
+        }
+        if (sheet && !sheet.hidden) renderResourcesSheet();
+      });
+    }
+
+    if (closeBtn && !closeBtn.dataset.resourcesSheetBound) {
+      closeBtn.dataset.resourcesSheetBound = "1";
+      closeBtn.addEventListener("click", closeResourcesSheet);
+    }
+
+    if (reloadBtn && !reloadBtn.dataset.resourcesSheetBound) {
+      reloadBtn.dataset.resourcesSheetBound = "1";
+      reloadBtn.addEventListener("click", reloadResourcesSheet);
+    }
+
+    if (saveBtn && !saveBtn.dataset.resourcesSheetBound) {
+      saveBtn.dataset.resourcesSheetBound = "1";
+      saveBtn.addEventListener("click", saveResourcesSheet);
+    }
+
+    if (search && !search.dataset.resourcesSheetBound) {
+      search.dataset.resourcesSheetBound = "1";
+      search.addEventListener("input", renderResourcesSheet);
+    }
+  }
+
+  window.openResourcesSheet = openResourcesSheet;
+  window.renderResourcesSheet = renderResourcesSheet;
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindResourcesSheetPatch);
+  } else {
+    bindResourcesSheetPatch();
+  }
+
+  setTimeout(bindResourcesSheetPatch, 500);
+  setTimeout(bindResourcesSheetPatch, 1500);
+})();
+// === RISORSE SHEET PATCH END ===
+
+// === SHOW ZERO TOGGLE RERENDER PATCH START ===
+(function patchShowZeroToggleRerender() {
+  function findShowZeroToggle() {
+    const candidates = Array.from(document.querySelectorAll("input[type='checkbox']"));
+
+    return candidates.find((input) => {
+      const label = input.closest("label");
+      const text = String(label ? label.textContent : "").toUpperCase();
+      return (
+        text.includes("MOSTRA") &&
+        (
+          text.includes("SENZA FABBISOGNO") ||
+          text.includes("ZERO") ||
+          text.includes("COMMESSE")
+        )
+      );
+    }) || null;
+  }
+
+  async function rerenderPlannerAfterShowZeroChange() {
+    try {
+      if (typeof renderPlanner === "function") {
+        renderPlanner();
+        return;
+      }
+
+      if (typeof loadAll === "function") {
+        await loadAll();
+        return;
+      }
+
+      window.location.reload();
+    } catch (error) {
+      console.error("Errore refresh planner dopo toggle mostra senza fabbisogno", error);
+      window.location.reload();
+    }
+  }
+
+  function bindShowZeroToggle() {
+    const toggle = findShowZeroToggle();
+
+    if (!toggle) {
+      return;
+    }
+
+    if (toggle.dataset.showZeroRerenderBound === "1") {
+      return;
+    }
+
+    toggle.dataset.showZeroRerenderBound = "1";
+
+    toggle.addEventListener("change", () => {
+      rerenderPlannerAfterShowZeroChange();
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindShowZeroToggle);
+  } else {
+    bindShowZeroToggle();
+  }
+
+  setTimeout(bindShowZeroToggle, 500);
+  setTimeout(bindShowZeroToggle, 1500);
+})();
+// === SHOW ZERO TOGGLE RERENDER PATCH END ===
+
+// === BOTTOM DETAIL PANEL PATCH START ===
+(function patchBottomDetailPanel() {
+  function qs(id) {
+    return document.getElementById(id);
+  }
+
+  function safeEscape(value) {
+    if (typeof escapeHtml === "function") return escapeHtml(value);
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function safeNormalize(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeFormatNumber(value) {
+    if (typeof formatNumber === "function") return formatNumber(value);
+    const n = Number(value || 0);
+    return Number.isInteger(n) ? String(n) : n.toFixed(1);
+  }
+
+  function safeFormatLoad(value) {
+    if (typeof formatLoad === "function") return formatLoad(value);
+    const n = Number(value || 100);
+    if (n === 100) return "1:1";
+    if (n === 50) return "1/2";
+    return `${n}%`;
+  }
+
+  function getBottomBox() {
+    let box = qs("plannerBottomDetail");
+
+    if (box) return box;
+
+    const bottomContent = document.querySelector(".planner-bottom .bottom-content");
+
+    if (bottomContent) {
+      bottomContent.id = "plannerBottomDetail";
+      return bottomContent;
+    }
+
+    return null;
+  }
+
+  function getSelectedCellFromDom() {
+    const selected =
+      document.querySelector(".planner-cell.selected") ||
+      document.querySelector(".planner-cell.is-selected") ||
+      document.querySelector(".planner-cell-clickable.selected") ||
+      document.querySelector(".planner-cell-clickable.is-selected") ||
+      document.querySelector("[data-cell].selected") ||
+      document.querySelector("[data-cell].is-selected");
+
+    if (!selected) return null;
+
+    if (selected.dataset && selected.dataset.cell) {
+      try {
+        return JSON.parse(decodeURIComponent(selected.dataset.cell));
+      } catch (error) {
+        try {
+          return JSON.parse(selected.dataset.cell);
+        } catch (innerError) {
+          console.error("Errore parsing data-cell", innerError);
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function getSelectionSummarySafe() {
+    if (typeof getSelectionSummary === "function") {
+      try {
+        return getSelectionSummary();
+      } catch (error) {
+        console.error("Errore getSelectionSummary", error);
+      }
+    }
+    return null;
+  }
+
+  function getCellData() {
+    const domCell = getSelectedCellFromDom();
+
+    if (domCell) {
+      return domCell;
+    }
+
+    const summary = getSelectionSummarySafe();
+
+    if (!summary) return null;
+
+    try {
+      const row = Array.from(document.querySelectorAll("[data-cell]")).find((el) => {
+        try {
+          const parsed = JSON.parse(decodeURIComponent(el.dataset.cell));
+          return (
+            Number(parsed.project_id) === Number(summary.project_id) &&
+            safeNormalize(parsed.role || "") === safeNormalize(summary.role || "") &&
+            Number(parsed.period_key || parsed.periodKey || 0) === Number(summary.period_from || summary.periodKey || 0)
+          );
+        } catch (error) {
+          return false;
+        }
+      });
+
+      if (row) {
+        return JSON.parse(decodeURIComponent(row.dataset.cell));
+      }
+    } catch (error) {
+      return null;
+    }
+
+    return null;
+  }
+
+  function getResourceByIdLocal(id) {
+    try {
+      return resourcesData.find((resource) => Number(resource.id) === Number(id)) || null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function isExternalLocal(item, resource) {
+    if (typeof isExternalResource === "function") {
+      try {
+        if (resource && isExternalResource(resource)) return true;
+        if (item && isExternalResource(item)) return true;
+      } catch (error) {
+        // ignore
+      }
+    }
+
+    const text = safeNormalize(
+      `${item?.resource_name || ""} ${item?.resource_role || ""} ${item?.name || ""} ${item?.role || ""} ${item?.note || ""} ${resource?.name || ""} ${resource?.role || ""} ${resource?.availability_note || ""}`
+    );
+
+    return text.includes("-EXT") || text.includes("EMPLOYER=EXT") || text.includes(" EXT ");
+  }
+
+  function resourceNameLocal(item) {
+    const resource = getResourceByIdLocal(item?.resource_id);
+    const raw =
+      item?.resource_name ||
+      item?.resourceName ||
+      item?.name ||
+      resource?.name ||
+      "";
+
+    if (typeof shortResourceName === "function") {
+      return shortResourceName(raw);
+    }
+
+    return raw;
+  }
+
+  function roleLabelLocal(item, rowRole) {
+    const resource = getResourceByIdLocal(item?.resource_id);
+    const realRole =
+      item?.resource_role ||
+      item?.resourceRole ||
+      resource?.role ||
+      item?.role ||
+      "";
+
+    if (isExternalLocal(item, resource)) return "EXT";
+
+    if (typeof mansioneLabel === "function") {
+      try {
+        return mansioneLabel(rowRole, realRole);
+      } catch (error) {
+        return realRole || rowRole || "";
+      }
+    }
+
+    return realRole || rowRole || "";
+  }
+
+  function statusLabelLocal(item, historical) {
+    const resource = getResourceByIdLocal(item?.resource_id);
+
+    if (isExternalLocal(item, resource)) return "EXT";
+
+    const text = safeNormalize(`${item?.status || ""} ${item?.reason || ""} ${item?.note || ""} ${resource?.availability_note || ""}`);
+
+    if (historical) {
+      if (text.includes("FUORI") || text.includes("CESS")) return "FUORI_CONTRATTO";
+      if (text.includes("INDISP")) return "INDISP";
+      return "STORICO";
+    }
+
+    if (text.includes("FUORI") || text.includes("CESS")) return "FUORI_CONTRATTO";
+    if (text.includes("INDISP")) return "INDISP";
+
+    return "ACTIVE";
+  }
+
+  function loadLabelLocal(item, historical) {
+    if (historical) return "0:1";
+
+    if (item?.display_weight) return item.display_weight;
+
+    const load = item?.load_percent ?? item?.loadPercent ?? 100;
+    return safeFormatLoad(load);
+  }
+
+  function renderResourceRows(items, rowRole, historical) {
+    if (!Array.isArray(items) || !items.length) {
+      return `<div class="bottom-detail-muted">Nessuna risorsa ${historical ? "storica/non conteggiata" : "attiva conteggiata"}.</div>`;
+    }
+
+    return items.map((item) => {
+      const resource = getResourceByIdLocal(item?.resource_id);
+      const ext = isExternalLocal(item, resource);
+
+      const classes = [
+        "bottom-detail-resource-row",
+        historical ? "bottom-detail-resource-history" : "",
+        ext ? "bottom-detail-resource-ext" : "",
+      ].join(" ");
+
+      return `
+        <div class="${classes}">
+          <div class="bottom-detail-resource-name">${safeEscape(resourceNameLocal(item))}</div>
+          <div class="bottom-detail-resource-role">${safeEscape(roleLabelLocal(item, rowRole))}</div>
+          <div class="bottom-detail-resource-load">${safeEscape(loadLabelLocal(item, historical))}</div>
+          <div class="bottom-detail-resource-status">${safeEscape(statusLabelLocal(item, historical))}</div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  function getActiveAndHistoricalFromCell(cell, summary) {
+    const active = Array.isArray(cell?.active_resources) ? cell.active_resources : [];
+    const historical = Array.isArray(cell?.historical_resources) ? cell.historical_resources : [];
+
+    if (active.length || historical.length) {
+      return { active, historical };
+    }
+
+    // fallback se la cella non contiene arrays backend
+    try {
+      const selectedPeriod = Number(cell?.period_key || summary?.period_from || 0);
+      const projectId = Number(cell?.project_id || summary?.project_id || 0);
+      const role = safeNormalize(cell?.role || summary?.role || "");
+
+      const activeFallback = [];
+      const historicalFallback = [];
+
+      allocationsData.forEach((allocation) => {
+        if (
+          Number(allocation.project_id) !== projectId ||
+          safeNormalize(allocation.role || "") !== role ||
+          Number(normalizePeriodKey(allocation)) !== selectedPeriod
+        ) {
+          return;
+        }
+
+        const resource = getResourceByIdLocal(allocation.resource_id);
+
+        if (!resource) return;
+
+        if (typeof isResourceAvailableForPeriod === "function" && isResourceAvailableForPeriod(resource, selectedPeriod)) {
+          activeFallback.push(allocation);
+        } else {
+          historicalFallback.push(allocation);
+        }
+      });
+
+      return {
+        active: activeFallback,
+        historical: historicalFallback,
+      };
+    } catch (error) {
+      return { active, historical };
+    }
+  }
+
+  function renderNormalBottomDetail(box, cell, summary) {
+    const required = Number(cell?.required ?? summary?.required ?? 0);
+    const allocated = Number(cell?.allocated ?? summary?.allocated ?? 0);
+    const internal = Number(cell?.internal_allocated ?? cell?.internalAllocated ?? allocated ?? 0);
+    const external = Number(cell?.external_allocated ?? cell?.externalAllocated ?? 0);
+    const diff = required - allocated;
+
+    const projectName = cell?.project_name || summary?.project_name || "";
+    const role = cell?.role || summary?.role || "";
+    const week = Number(cell?.week || summary?.week_from || 0);
+    const periodKey = Number(cell?.period_key || summary?.period_from || 0);
+
+    const resources = getActiveAndHistoricalFromCell(cell, summary);
+    const badges = Array.isArray(cell?.badges) ? cell.badges : [];
+
+    const allocatedText = external > 0
+      ? `${safeFormatNumber(internal)}+${safeFormatNumber(external)}`
+      : safeFormatNumber(allocated);
+
+    const badgesHtml = badges.length
+      ? `<div class="bottom-detail-badges">${badges.map((badge) => `<span>${safeEscape(badge)}</span>`).join("")}</div>`
+      : "";
+
+    box.innerHTML = `
+      <div class="bottom-detail-header">
+        <div>
+          <strong>${safeEscape(projectName)}</strong>
+          <span>/ ${safeEscape(role)}</span>
+          <span>/ W${String(week).padStart(2, "0")}</span>
+        </div>
+        <div class="bottom-detail-numbers">
+          <span>R${safeFormatNumber(required)}</span>
+          <span>A${safeEscape(allocatedText)}</span>
+          <span>D${safeFormatNumber(diff)}</span>
+        </div>
+      </div>
+
+      ${badgesHtml}
+
+      <div class="bottom-detail-grid">
+        <div class="bottom-detail-block">
+          <div class="bottom-detail-title">Risorse attive conteggiate</div>
+          ${renderResourceRows(resources.active, role, false)}
+        </div>
+
+        <div class="bottom-detail-block">
+          <div class="bottom-detail-title">Storico / fuori contratto / non conteggiati</div>
+          ${renderResourceRows(resources.historical, role, true)}
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderOverallBottomDetail(box, cell, summary) {
+    const projectName = cell?.project_name || summary?.project_name || "";
+    const role = cell?.role || summary?.role || "";
+    const week = Number(cell?.week || summary?.week_from || 0);
+    const projectId = Number(cell?.project_id || summary?.project_id || 0);
+
+    const required = Number(cell?.required ?? summary?.required ?? 0);
+    const allocated = Number(cell?.allocated ?? summary?.allocated ?? 0);
+    const internal = Number(cell?.internal_allocated ?? cell?.internalAllocated ?? allocated ?? 0);
+    const external = Number(cell?.external_allocated ?? cell?.externalAllocated ?? 0);
+    const diff = required - allocated;
+
+    const allocatedText = external > 0
+      ? `${safeFormatNumber(internal)}+${safeFormatNumber(external)}`
+      : safeFormatNumber(allocated);
+
+    box.innerHTML = `
+      <div class="bottom-detail-header">
+        <div>
+          <strong>${safeEscape(projectName)}</strong>
+          <span>/ ${safeEscape(role)}</span>
+          <span>/ W${String(week).padStart(2, "0")}</span>
+        </div>
+        <div class="bottom-detail-numbers">
+          <span>R${safeFormatNumber(required)}</span>
+          <span>A${safeEscape(allocatedText)}</span>
+          <span>D${safeFormatNumber(diff)}</span>
+        </div>
+      </div>
+
+      <div class="bottom-detail-muted">Caricamento dettaglio OVERALL OFFICINA...</div>
+    `;
+
+    try {
+      const params = new URLSearchParams({
+        project_id: String(projectId),
+        role: role,
+        week: String(week),
+      });
+
+      const data = await fetchJson(`/api/workshop-breakdown?${params.toString()}`);
+      const sources = Array.isArray(data.sources) ? data.sources : [];
+      const resources = getActiveAndHistoricalFromCell(cell, summary);
+
+      const sourceRows = sources.length
+        ? sources.map((source) => `
+            <div class="bottom-overall-row">
+              <div class="bottom-overall-project">${safeEscape(source.project_name || "")}</div>
+              <div class="bottom-overall-role">${safeEscape(source.role || role)}</div>
+              <div class="bottom-overall-required">R${safeFormatNumber(source.required || 0)}</div>
+            </div>
+          `).join("")
+        : `<div class="bottom-detail-muted">Nessuna sottocommessa trovata per questa cella.</div>`;
+
+      box.innerHTML = `
+        <div class="bottom-detail-header">
+          <div>
+            <strong>${safeEscape(projectName)}</strong>
+            <span>/ ${safeEscape(role)}</span>
+            <span>/ W${String(week).padStart(2, "0")}</span>
+          </div>
+          <div class="bottom-detail-numbers">
+            <span>R${safeFormatNumber(required)}</span>
+            <span>A${safeEscape(allocatedText)}</span>
+            <span>D${safeFormatNumber(diff)}</span>
+          </div>
+        </div>
+
+        <div class="bottom-detail-grid bottom-detail-grid-wide">
+          <div class="bottom-detail-block">
+            <div class="bottom-detail-title">Dettaglio sottocommesse officina</div>
+            ${sourceRows}
+            <div class="bottom-overall-total">
+              <div>Totale OVERALL</div>
+              <div>R${safeFormatNumber(data.total_required || 0)}</div>
+            </div>
+          </div>
+
+          <div class="bottom-detail-block">
+            <div class="bottom-detail-title">Allocazioni su OVERALL OFFICINA</div>
+            ${renderResourceRows(resources.active, role, false)}
+
+            <div class="bottom-detail-title bottom-detail-title-secondary">Storico / fuori contratto</div>
+            ${renderResourceRows(resources.historical, role, true)}
+          </div>
+        </div>
+      `;
+    } catch (error) {
+      console.error("Errore dettaglio OVERALL", error);
+      box.innerHTML += `
+        <div class="bottom-detail-error">Errore caricamento dettaglio OVERALL OFFICINA.</div>
+      `;
+    }
+  }
+
+  async function renderBottomDetailPanel() {
+    const box = getBottomBox();
+    if (!box) return;
+
+    const summary = getSelectionSummarySafe();
+    const cell = getCellData();
+
+    if (!summary && !cell) {
+      box.innerHTML = `<div class="bottom-detail-muted">Seleziona una cella per vedere dettaglio, storico e note operative.</div>`;
+      return;
+    }
+
+    const projectName = cell?.project_name || summary?.project_name || "";
+    const isOverall = safeNormalize(projectName).includes("OVERALL OFFICINA");
+
+    if (isOverall) {
+      await renderOverallBottomDetail(box, cell || {}, summary || {});
+    } else {
+      renderNormalBottomDetail(box, cell || {}, summary || {});
+    }
+  }
+
+  function bindBottomDetailClicks() {
+    document.addEventListener("click", (event) => {
+      const target = event.target.closest("[data-cell], .planner-cell, .planner-cell-clickable");
+
+      if (!target) return;
+
+      setTimeout(renderBottomDetailPanel, 60);
+      setTimeout(renderBottomDetailPanel, 250);
+    });
+  }
+
+  function patchUpdateSidePanel() {
+    if (typeof updateSidePanelFromSelection !== "function") return;
+
+    if (window.__bottomDetailUpdatePatched) return;
+    window.__bottomDetailUpdatePatched = true;
+
+    const original = updateSidePanelFromSelection;
+
+    window.updateSidePanelFromSelection = function patchedUpdateSidePanelFromSelection() {
+      const result = original.apply(this, arguments);
+      setTimeout(renderBottomDetailPanel, 50);
+      return result;
+    };
+  }
+
+  window.renderBottomDetailPanel = renderBottomDetailPanel;
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      bindBottomDetailClicks();
+      patchUpdateSidePanel();
+    });
+  } else {
+    bindBottomDetailClicks();
+    patchUpdateSidePanel();
+  }
+
+  setTimeout(patchUpdateSidePanel, 500);
+  setTimeout(patchUpdateSidePanel, 1500);
+})();
+// === BOTTOM DETAIL PANEL PATCH END ===
+
+// === ALLOCATION HISTORY BOTTOM PATCH START ===
+(function patchAllocationHistoryBottom() {
+  window.allocationHistoryData = window.allocationHistoryData || [];
+
+  function safeNormalize(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeFormatLoad(value) {
+    if (typeof formatLoad === "function") return formatLoad(value);
+    const n = Number(value || 100);
+    if (n === 100) return "1:1";
+    if (n === 50) return "1/2";
+    return `${n}%`;
+  }
+
+  async function loadAllocationHistoryData() {
+    try {
+      if (typeof fetchJson !== "function") return;
+
+      const rows = await fetchJson("/api/allocation-history");
+
+      if (Array.isArray(rows)) {
+        window.allocationHistoryData = rows;
+      }
+    } catch (error) {
+      console.error("Errore caricamento allocation_history", error);
+      window.allocationHistoryData = [];
+    }
+  }
+
+  function getSelectedContextForHistory() {
+    let summary = null;
+
+    if (typeof getSelectionSummary === "function") {
+      try {
+        summary = getSelectionSummary();
+      } catch (error) {
+        summary = null;
+      }
+    }
+
+    let cell = null;
+    const selected =
+      document.querySelector("[data-cell].selected") ||
+      document.querySelector("[data-cell].is-selected") ||
+      document.querySelector(".planner-cell.selected[data-cell]") ||
+      document.querySelector(".planner-cell.is-selected[data-cell]") ||
+      document.querySelector(".planner-cell-clickable.selected[data-cell]") ||
+      document.querySelector(".planner-cell-clickable.is-selected[data-cell]");
+
+    if (selected && selected.dataset.cell) {
+      try {
+        cell = JSON.parse(decodeURIComponent(selected.dataset.cell));
+      } catch (error) {
+        try {
+          cell = JSON.parse(selected.dataset.cell);
+        } catch (innerError) {
+          cell = null;
+        }
+      }
+    }
+
+    return {
+      projectId: Number(cell?.project_id || summary?.project_id || 0),
+      projectName: cell?.project_name || summary?.project_name || "",
+      role: safeNormalize(cell?.role || summary?.role || ""),
+      periodKey: Number(cell?.period_key || summary?.period_from || 0),
+      week: Number(cell?.week || summary?.week_from || 0),
+    };
+  }
+
+  function historyMatchesSelection(row, context) {
+    if (!row || !context.projectId || !context.role || !context.periodKey) {
+      return false;
+    }
+
+    return (
+      Number(row.project_id) === Number(context.projectId) &&
+      safeNormalize(row.role || "") === context.role &&
+      Number(row.period_key || 0) === Number(context.periodKey)
+    );
+  }
+
+  function historyRowKey(row) {
+    return `${row.history_id || row.id || ""}__${row.resource_id || ""}__${row.resource_name || ""}`;
+  }
+
+  function appendHistoryRowsToBottom() {
+    const box = document.getElementById("plannerBottomDetail") || document.querySelector(".planner-bottom .bottom-content");
+
+    if (!box) return;
+
+    const context = getSelectedContextForHistory();
+
+    if (!context.projectId || !context.role || !context.periodKey) {
+      return;
+    }
+
+    const rows = (window.allocationHistoryData || []).filter((row) => historyMatchesSelection(row, context));
+
+    if (!rows.length) {
+      return;
+    }
+
+    const historyBlock = Array.from(box.querySelectorAll(".bottom-detail-block")).find((block) => {
+      return String(block.textContent || "").toUpperCase().includes("STORICO");
+    });
+
+    if (!historyBlock) {
+      return;
+    }
+
+    const existingKeys = new Set(
+      Array.from(historyBlock.querySelectorAll("[data-history-key]")).map((el) => el.dataset.historyKey)
+    );
+
+    const html = rows
+      .filter((row) => !existingKeys.has(historyRowKey(row)))
+      .map((row) => {
+        const key = historyRowKey(row);
+        const status = row.reason || "STORICO";
+        const load = "0:1";
+
+        return `
+          <div class="bottom-detail-resource-row bottom-detail-resource-history" data-history-key="${key}">
+            <div class="bottom-detail-resource-name">${row.resource_name || ""}</div>
+            <div class="bottom-detail-resource-role">${row.resource_role || row.role || ""}</div>
+            <div class="bottom-detail-resource-load">${load}</div>
+            <div class="bottom-detail-resource-status">${status}</div>
+          </div>
+        `;
+      })
+      .join("");
+
+    if (!html) {
+      return;
+    }
+
+    const muted = historyBlock.querySelector(".bottom-detail-muted");
+
+    if (muted) {
+      muted.remove();
+    }
+
+    historyBlock.insertAdjacentHTML("beforeend", html);
+  }
+
+  async function refreshHistoryAndBottom() {
+    await loadAllocationHistoryData();
+
+    if (typeof window.renderBottomDetailPanel === "function") {
+      await window.renderBottomDetailPanel();
+    }
+
+    setTimeout(appendHistoryRowsToBottom, 80);
+    setTimeout(appendHistoryRowsToBottom, 250);
+  }
+
+  const originalLoadAll = typeof loadAll === "function" ? loadAll : null;
+
+  if (originalLoadAll && !window.__allocationHistoryLoadAllPatched) {
+    window.__allocationHistoryLoadAllPatched = true;
+
+    window.loadAll = async function patchedLoadAllWithHistory() {
+      const result = await originalLoadAll.apply(this, arguments);
+      await loadAllocationHistoryData();
+      return result;
+    };
+  }
+
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest("[data-cell], .planner-cell, .planner-cell-clickable");
+
+    if (!target) return;
+
+    setTimeout(appendHistoryRowsToBottom, 120);
+    setTimeout(appendHistoryRowsToBottom, 350);
+  });
+
+  loadAllocationHistoryData();
+})();
+// === ALLOCATION HISTORY BOTTOM PATCH END ===
+
+// === FRONTEND OVERALL DEMANDS FROM ROLLUP PATCH START ===
+(function patchFrontendOverallDemandsFromRollup() {
+  window.workshopRequiredMapData = window.workshopRequiredMapData || [];
+
+  function safeNormalize(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeNumber(value) {
+    const n = Number(value || 0);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function getOverallProjectId() {
+    try {
+      const project = (projectsData || []).find((item) => {
+        return safeNormalize(`${item.name || ""} ${item.note || ""}`).includes("OVERALL OFFICINA");
+      });
+
+      return project ? Number(project.id) : 0;
+    } catch (error) {
+      return 0;
+    }
+  }
+
+  async function loadWorkshopRequiredMapForFrontend() {
+    try {
+      if (typeof fetchJson !== "function") return [];
+
+      const rows = await fetchJson("/api/workshop-required-map");
+
+      if (Array.isArray(rows)) {
+        window.workshopRequiredMapData = rows;
+        return rows;
+      }
+
+      window.workshopRequiredMapData = [];
+      return [];
+    } catch (error) {
+      console.error("Errore caricamento /api/workshop-required-map", error);
+      window.workshopRequiredMapData = [];
+      return [];
+    }
+  }
+
+  function applyWorkshopRollupToDemandsData() {
+    if (!Array.isArray(window.workshopRequiredMapData) || !window.workshopRequiredMapData.length) {
+      return;
+    }
+
+    if (!Array.isArray(demandsData)) {
+      return;
+    }
+
+    const overallProjectId = getOverallProjectId();
+
+    if (!overallProjectId) {
+      return;
+    }
+
+    // Togliamo i demands importati direttamente su OVERALL OFFICINA.
+    // Nel vecchio planner OVERALL OFFICINA e' un rollup, quindi R deve arrivare dalle figlie officina.
+    const withoutOverallDirectDemands = demandsData.filter((demand) => {
+      return Number(demand.project_id) !== Number(overallProjectId);
+    });
+
+    const rollupDemands = window.workshopRequiredMapData
+      .filter((row) => Number(row.overall_project_id || row.project_id) === Number(overallProjectId))
+      .map((row, index) => {
+        const periodKey = Number(row.period_key || 0);
+        const week = Number(row.week || (periodKey % 100));
+
+        return {
+          id: `workshop-rollup-${index}`,
+          project_id: overallProjectId,
+          week: week,
+          period_key: periodKey,
+          role: safeNormalize(row.role || ""),
+          quantity: safeNumber(row.required ?? row.quantity),
+          note: "WORKSHOP_ROLLUP_SOURCES"
+        };
+      })
+      .filter((row) => row.role && row.period_key && safeNumber(row.quantity) !== 0);
+
+    demandsData = withoutOverallDirectDemands.concat(rollupDemands);
+
+    try {
+      window.demandsData = demandsData;
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  async function reloadOverallRollupAndRender() {
+    await loadWorkshopRequiredMapForFrontend();
+    applyWorkshopRollupToDemandsData();
+
+    if (typeof renderPlanner === "function") {
+      renderPlanner();
+    }
+  }
+
+  const originalLoadAll = typeof loadAll === "function" ? loadAll : null;
+
+  if (originalLoadAll && !window.__frontendOverallDemandsLoadAllPatched) {
+    window.__frontendOverallDemandsLoadAllPatched = true;
+
+    loadAll = async function patchedLoadAllFrontendOverallDemands() {
+      const result = await originalLoadAll.apply(this, arguments);
+      await loadWorkshopRequiredMapForFrontend();
+      applyWorkshopRollupToDemandsData();
+
+      if (typeof renderPlanner === "function") {
+        renderPlanner();
+      }
+
+      return result;
+    };
+
+    try {
+      window.loadAll = loadAll;
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  const originalRenderPlanner = typeof renderPlanner === "function" ? renderPlanner : null;
+
+  if (originalRenderPlanner && !window.__frontendOverallDemandsRenderPatched) {
+    window.__frontendOverallDemandsRenderPatched = true;
+
+    renderPlanner = function patchedRenderPlannerFrontendOverallDemands() {
+      applyWorkshopRollupToDemandsData();
+      return originalRenderPlanner.apply(this, arguments);
+    };
+
+    try {
+      window.renderPlanner = renderPlanner;
+    } catch (error) {
+      // ignore
+    }
+  }
+
+  loadWorkshopRequiredMapForFrontend().then(() => {
+    applyWorkshopRollupToDemandsData();
+
+    if (typeof renderPlanner === "function") {
+      renderPlanner();
+    }
+  });
+
+  window.reloadOverallRollupAndRender = reloadOverallRollupAndRender;
+})();
+// === FRONTEND OVERALL DEMANDS FROM ROLLUP PATCH END ===
+

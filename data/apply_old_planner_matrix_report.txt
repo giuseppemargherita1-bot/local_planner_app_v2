@@ -1,0 +1,20 @@
+=== APPLY OLD PLANNER MATRIX REPORT ===
+Import zero: 07/04/2026
+Matrice: C:\Users\UTENTE\Desktop\PROJ\local_planner_app_v2\data\old_planner_matrix_preview.csv
+
+=== CONTEGGI SCRITTURA ===
+Demands inseriti: 916
+Allocazioni attive inserite: 1093
+Allocazioni storiche inserite: 18
+Active unresolved: 0
+History unresolved: 0
+
+=== TOTALI MATRICE VS DB OPERATIVO ===
+Matrice celle: 1140 | R=3251.0 | A=1093.0 | D=2158.0
+DB celle: 996 | R=3251.0 | A=1093.0 | D=2158.0
+Delta R: 0.0
+Delta A: 0.0
+
+=== ACTIVE UNRESOLVED PRIME 100 ===
+
+=== HISTORY UNRESOLVED PRIME 100 ===

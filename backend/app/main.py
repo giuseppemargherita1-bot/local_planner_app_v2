@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.db import init_db, get_connection
+from app.old_logic_adapter import build_planner_matrix, get_workshop_breakdown
 
 
 app = FastAPI(
@@ -109,7 +110,100 @@ def info():
         "backend": "FastAPI",
         "database": "SQLite"
     }
+@app.get("/api/planner-matrix-old-logic")
+def planner_matrix_old_logic(
+    show_zero: bool = False,
+    project: str | None = None,
+    role: str | None = None
+):
+    return build_planner_matrix(
+        show_zero_demand_projects=show_zero,
+        project_filter=project,
+        role_filter=role
+    )
 
+
+@app.get("/api/workshop-breakdown")
+@app.get("/api/workshop-breakdown")
+def workshop_breakdown(
+    project_id: int | None = None,
+    role: str | None = None,
+    week: int | None = None,
+    period_key: int | None = None
+):
+    selected_period_key = int(period_key or (2600 + int(week or 0)))
+    selected_role = str(role or "").strip().upper()
+
+    conn = get_connection()
+    try:
+        overall = conn.execute(
+            """
+            SELECT id, name
+            FROM projects
+            WHERE id = ?
+               OR UPPER(name) LIKE '%OVERALL OFFICINA%'
+               OR UPPER(note) LIKE '%WORKSHOP_ROLLUP%'
+            ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, id
+            LIMIT 1
+            """,
+            (project_id or 0, project_id or 0),
+        ).fetchone()
+
+        if not overall:
+            return {
+                "project_id": project_id,
+                "role": selected_role,
+                "week": selected_period_key % 100,
+                "period_key": selected_period_key,
+                "sources": [],
+                "total_required": 0,
+            }
+
+        overall_project_id = int(overall["id"])
+
+        rows = conn.execute(
+            """
+            SELECT
+                source_old_project_id,
+                source_project_name,
+                role,
+                week,
+                period_key,
+                required
+            FROM workshop_rollup_sources
+            WHERE overall_project_id = ?
+              AND period_key = ?
+              AND UPPER(role) = ?
+              AND COALESCE(required, 0) <> 0
+            ORDER BY source_project_name
+            """,
+            (overall_project_id, selected_period_key, selected_role),
+        ).fetchall()
+
+        sources = [
+            {
+                "source_old_project_id": row["source_old_project_id"],
+                "project_name": row["source_project_name"],
+                "source_project_name": row["source_project_name"],
+                "role": row["role"],
+                "week": row["week"],
+                "period_key": row["period_key"],
+                "required": row["required"],
+            }
+            for row in rows
+        ]
+
+        return {
+            "project_id": overall_project_id,
+            "project_name": overall["name"],
+            "role": selected_role,
+            "week": selected_period_key % 100,
+            "period_key": selected_period_key,
+            "sources": sources,
+            "total_required": sum(float(source["required"] or 0) for source in sources),
+        }
+    finally:
+        conn.close()
 
 def clean_text(value):
     return str(value or "").strip()
@@ -1582,5 +1676,37 @@ def remove_allocation_range(payload: AllocationRangePayload):
             "removed_ids": removed_ids,
             "rebalanced_weeks": touched_weeks,
         }
+    finally:
+        conn.close()
+
+@app.get("/api/workshop-required-map")
+def workshop_required_map():
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT
+                overall_project_id,
+                UPPER(role) AS role,
+                period_key,
+                week,
+                SUM(COALESCE(required, 0)) AS required
+            FROM workshop_rollup_sources
+            GROUP BY overall_project_id, UPPER(role), period_key, week
+            ORDER BY period_key, role
+        """).fetchall()
+
+        return [
+            {
+                "overall_project_id": row["overall_project_id"],
+                "project_id": row["overall_project_id"],
+                "role": row["role"],
+                "period_key": row["period_key"],
+                "week": row["week"],
+                "quantity": row["required"],
+                "required": row["required"],
+                "note": "WORKSHOP_ROLLUP_SOURCES"
+            }
+            for row in rows
+        ]
     finally:
         conn.close()

@@ -175,10 +175,45 @@
 
       <div class="splitter splitter-horizontal" id="horizontalSplitter"></div>
 
-      <section class="planner-bottom card">
-        <div class="side-title side-title-bottom">Dettaglio allocazioni / note</div>
-        <div class="bottom-content">Seleziona una cella o una risorsa per vedere qui dettaglio, storico e note operative.</div>
+     <section class="planner-bottom card">
+  <div class="side-title side-title-bottom">Dettaglio allocazioni / note</div>
+  <div class="bottom-content" id="plannerBottomDetail">
+    Seleziona una cella o una risorsa per vedere qui dettaglio, storico e note operative.
+  </div>
+</section>
+      <section class="resources-sheet card" id="resourcesSheet" hidden>
+        <div class="resources-sheet-header">
+          <div>
+            <div class="side-title">Foglio Risorse</div>
+            <div class="resources-sheet-subtitle">
+              Modifica manuale anagrafica risorse. Usa questo foglio per correggere cessati, note e mansioni.
+            </div>
+          </div>
+
+          <div class="resources-sheet-actions">
+            <input id="resourcesSheetSearch" type="text" placeholder="Cerca nome, mansione, note..." />
+            <button class="btn btn-primary" id="resourcesSheetSaveBtn" type="button">Salva modifiche</button>
+            <button class="btn btn-light" id="resourcesSheetReloadBtn" type="button">Ricarica</button>
+            <button class="btn btn-light" id="resourcesSheetCloseBtn" type="button">Chiudi</button>
+          </div>
+        </div>
+
+        <div class="resources-sheet-table-wrap">
+          <table class="resources-sheet-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Nome</th>
+                <th>Mansione</th>
+                <th>Attiva</th>
+                <th>Note / Stato</th>
+              </tr>
+            </thead>
+            <tbody id="resourcesSheetBody"></tbody>
+          </table>
+        </div>
       </section>
+
     </main>
   </div>
 

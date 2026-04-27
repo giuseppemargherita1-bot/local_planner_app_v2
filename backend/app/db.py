@@ -16,11 +16,6 @@ def get_connection():
     return conn
 
 
-def column_exists(conn, table_name, column_name):
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return any(row["name"] == column_name for row in rows)
-
-
 def table_exists(conn, table_name):
     row = conn.execute(
         """
@@ -32,6 +27,13 @@ def table_exists(conn, table_name):
         (table_name,),
     ).fetchone()
     return row is not None
+
+
+def column_exists(conn, table_name, column_name):
+    if not table_exists(conn, table_name):
+        return False
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return any(row["name"] == column_name for row in rows)
 
 
 def ensure_column(conn, table_name, column_name, column_definition):
@@ -102,7 +104,8 @@ def init_db():
                 name TEXT NOT NULL,
                 role TEXT DEFAULT '',
                 availability_note TEXT DEFAULT '',
-                is_active INTEGER DEFAULT 1
+                is_active INTEGER DEFAULT 1,
+                old_id INTEGER DEFAULT 0
             )
             """
         )
@@ -116,7 +119,11 @@ def init_db():
                 start_date TEXT DEFAULT '',
                 end_date TEXT DEFAULT '',
                 status TEXT DEFAULT 'attivo',
-                note TEXT DEFAULT ''
+                note TEXT DEFAULT '',
+                old_id INTEGER DEFAULT 0,
+                is_overall INTEGER DEFAULT 0,
+                parent_overall_id INTEGER DEFAULT 0,
+                workshop_rollup INTEGER DEFAULT 0
             )
             """
         )
@@ -192,6 +199,13 @@ def init_db():
             """
         )
 
+        ensure_column(conn, "resources", "old_id", "INTEGER DEFAULT 0")
+
+        ensure_column(conn, "projects", "old_id", "INTEGER DEFAULT 0")
+        ensure_column(conn, "projects", "is_overall", "INTEGER DEFAULT 0")
+        ensure_column(conn, "projects", "parent_overall_id", "INTEGER DEFAULT 0")
+        ensure_column(conn, "projects", "workshop_rollup", "INTEGER DEFAULT 0")
+
         ensure_column(conn, "demands", "period_key", "INTEGER DEFAULT 0")
         ensure_column(conn, "allocations", "period_key", "INTEGER DEFAULT 0")
         ensure_column(conn, "demand_history", "period_key", "INTEGER DEFAULT 0")
@@ -201,6 +215,27 @@ def init_db():
         backfill_period_key(conn, "allocations")
         backfill_period_key(conn, "demand_history")
         backfill_period_key(conn, "allocation_history")
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_projects_old_id
+            ON projects(old_id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_projects_overall
+            ON projects(is_overall, parent_overall_id, workshop_rollup)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_resources_old_id
+            ON resources(old_id)
+            """
+        )
 
         conn.execute(
             """
@@ -236,25 +271,26 @@ def seed_if_empty(conn):
     if resource_count == 0:
         conn.executemany(
             """
-            INSERT INTO resources (name, role, availability_note, is_active)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO resources (name, role, availability_note, is_active, old_id)
+            VALUES (?, ?, ?, ?, ?)
             """,
             [
-                ("MARIO ROSSI", "TUBISTA", "", 1),
-                ("Luigi Bianchi", "CARPENTIERE", "", 1),
-                ("Anna Verdi", "SALDATORE", "", 1),
+                ("MARIO ROSSI", "TUBISTA", "", 1, 0),
+                ("Luigi Bianchi", "CARPENTIERE", "", 1, 0),
+                ("Anna Verdi", "SALDATORE", "", 1, 0),
             ],
         )
 
     if project_count == 0:
         conn.executemany(
             """
-            INSERT INTO projects (name, client, start_date, end_date, status, note)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO projects
+            (name, client, start_date, end_date, status, note, old_id, is_overall, parent_overall_id, workshop_rollup)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
-                ("Commessa Alfa", "Cliente A", "2026-04-01", "2026-06-30", "attivo", ""),
-                ("Commessa Beta", "Cliente B", "2026-05-01", "2026-07-31", "attivo", ""),
+                ("Commessa Alfa", "Cliente A", "2026-04-01", "2026-06-30", "attivo", "", 0, 0, 0, 0),
+                ("Commessa Beta", "Cliente B", "2026-05-01", "2026-07-31", "attivo", "", 0, 0, 0, 0),
             ],
         )
 
