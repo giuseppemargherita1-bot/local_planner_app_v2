@@ -1057,8 +1057,8 @@ def upsert_demand_range(payload: DemandRangeUpsert):
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
 
-        for week in range(week_from, week_to + 1):
-            period_key = period_key_from_week(week)
+        for period_key in period_key_range_inclusive(week_from, week_to):
+            week = week_from_period_key(period_key)
 
             existing = conn.execute(
                 """
@@ -1390,8 +1390,8 @@ def assign_allocation_range(payload: AllocationRangePayload):
         week_from = min(payload.week_from, payload.week_to)
         week_to = max(payload.week_from, payload.week_to)
 
-        for week in range(week_from, week_to + 1):
-            period_key = period_key_from_week(week)
+        for period_key in period_key_range_inclusive(week_from, week_to):
+            week = week_from_period_key(period_key)
 
             existing_same_cell = conn.execute(
                 """
@@ -1740,8 +1740,8 @@ def upsert_demand_range(payload: dict):
 
         changed = 0
 
-        for week in range(week_from, week_to + 1):
-            period_key = 2600 + int(week)
+        for period_key in period_key_range_inclusive(week_from, week_to):
+            week = week_from_period_key(period_key)
 
             existing = conn.execute(
                 """
@@ -2116,3 +2116,1671 @@ def save_project_demand_matrix(project_id: int, payload: dict):
         return {"ok": True, "changed": changed}
     finally:
         conn.close()
+
+from datetime import datetime
+
+def _ensure_project_baseline_schema(conn):
+    cols = conn.execute("PRAGMA table_info(projects)").fetchall()
+    names = {row["name"] if hasattr(row, "keys") else row[1] for row in cols}
+
+    if "baseline_at" not in names:
+        conn.execute("ALTER TABLE projects ADD COLUMN baseline_at TEXT")
+
+    # Le commesse gia' presenti derivano dall'import vero del 07/04.
+    conn.execute(
+        """
+        UPDATE projects
+        SET baseline_at = '2026-04-07T00:00:00'
+        WHERE baseline_at IS NULL OR baseline_at = ''
+        """
+    )
+
+
+@app.post("/api/projects/create-baseline")
+def create_project_with_baseline(payload: dict):
+    name = str(payload.get("name") or "").strip()
+    status = str(payload.get("status") or "ACTIVE").strip().upper()
+    note = str(payload.get("note") or "").strip()
+    rows = payload.get("rows") or []
+
+    if not name:
+        return {"ok": False, "error": "Nome/codice commessa obbligatorio"}
+
+    if not isinstance(rows, list):
+        return {"ok": False, "error": "rows non valido"}
+
+    baseline_at = datetime.now().isoformat(timespec="seconds")
+
+    conn = get_connection()
+    try:
+        _ensure_project_baseline_schema(conn)
+
+        existing = conn.execute(
+            "SELECT id, name FROM projects WHERE UPPER(name) = UPPER(?) LIMIT 1",
+            (name,),
+        ).fetchone()
+
+        if existing:
+            return {"ok": False, "error": "Commessa gia' esistente"}
+
+        cur = conn.execute(
+            """
+            INSERT INTO projects(name, status, note, baseline_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                name,
+                status or "ACTIVE",
+                (note + " | BASELINE_CREATE").strip(" |"),
+                baseline_at,
+            ),
+        )
+
+        project_id = int(cur.lastrowid)
+        inserted = 0
+
+        for row in rows:
+            role = str(row.get("role") or "").strip().upper()
+            quantities = row.get("quantities") or {}
+
+            if not role or not isinstance(quantities, dict):
+                continue
+
+            for raw_period_key, raw_quantity in quantities.items():
+                quantity = float(raw_quantity or 0)
+
+                if quantity <= 0:
+                    continue
+
+                period_key = int(raw_period_key)
+                week = period_key % 100
+
+                conn.execute(
+                    """
+                    INSERT INTO demands(project_id, week, period_key, role, quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        quantity,
+                        "BASELINE_CREATE",
+                    ),
+                )
+                inserted += 1
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "baseline_at": baseline_at,
+            "inserted": inserted,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects/ensure-baseline")
+def ensure_projects_baseline():
+    conn = get_connection()
+    try:
+        _ensure_project_baseline_schema(conn)
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+@app.get("/api/workshop-breakdown-matrix")
+def workshop_breakdown_matrix():
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                overall_project_id,
+                source_old_project_id,
+                source_project_name,
+                role,
+                week,
+                period_key,
+                required
+            FROM workshop_rollup_sources
+            WHERE COALESCE(required, 0) <> 0
+            ORDER BY role, source_project_name, period_key
+            """
+        ).fetchall()
+
+        return {
+            "ok": True,
+            "rows": [
+                {
+                    "overall_project_id": row["overall_project_id"],
+                    "source_old_project_id": row["source_old_project_id"],
+                    "source_project_name": row["source_project_name"],
+                    "project_name": row["source_project_name"],
+                    "role": row["role"],
+                    "week": row["week"],
+                    "period_key": row["period_key"],
+                    "required": row["required"],
+                }
+                for row in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+# === PROJECTS SHEET V2 BACKEND START ===
+
+from datetime import datetime as _projects_sheet_datetime
+
+def _projects_sheet_ensure_schema(conn):
+    cols = conn.execute("PRAGMA table_info(projects)").fetchall()
+    names = {row["name"] for row in cols}
+
+    if "baseline_at" not in names:
+        conn.execute("ALTER TABLE projects ADD COLUMN baseline_at TEXT")
+
+    conn.execute(
+        """
+        UPDATE projects
+        SET baseline_at = '2026-04-07T00:00:00'
+        WHERE baseline_at IS NULL OR baseline_at = ''
+        """
+    )
+
+
+def _projects_sheet_period_key(value):
+    value = int(value or 0)
+    if value >= 1000:
+        return value
+    return 2600 + value
+
+
+def _projects_sheet_week_from_period(period_key):
+    return int(period_key or 0) % 100
+
+
+def _projects_sheet_norm(value):
+    return str(value or "").strip().upper()
+
+
+def _projects_sheet_is_overall(project):
+    if not project:
+        return False
+    name = _projects_sheet_norm(project["name"])
+    note = _projects_sheet_norm(project["note"])
+    return "OVERALL OFFICINA" in name or "OVERALL" in note or "WORKSHOP_ROLLUP" in note
+
+
+def _projects_sheet_insert_history(conn, project, role, week, period_key, old_quantity, new_quantity, note):
+    try:
+        conn.execute(
+            """
+            INSERT INTO demand_history(
+                project_id,
+                project_name,
+                role,
+                week,
+                period_key,
+                old_quantity,
+                new_quantity,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(project["id"]),
+                project["name"],
+                _projects_sheet_norm(role),
+                int(week),
+                int(period_key),
+                float(old_quantity or 0),
+                float(new_quantity or 0),
+                note,
+            ),
+        )
+        return
+    except Exception:
+        pass
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO demand_history(
+                project_id,
+                role,
+                week,
+                period_key,
+                old_quantity,
+                new_quantity,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(project["id"]),
+                _projects_sheet_norm(role),
+                int(week),
+                int(period_key),
+                float(old_quantity or 0),
+                float(new_quantity or 0),
+                note,
+            ),
+        )
+    except Exception:
+        pass
+
+
+@app.get("/api/projects-sheet/projects")
+def projects_sheet_projects():
+    conn = get_connection()
+    try:
+        _projects_sheet_ensure_schema(conn)
+
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                client,
+                start_date,
+                end_date,
+                status,
+                note,
+                baseline_at
+            FROM projects
+            ORDER BY name ASC
+            """
+        ).fetchall()
+
+        conn.commit()
+
+        result = []
+        for row in rows:
+            note = _projects_sheet_norm(row["note"])
+            name = _projects_sheet_norm(row["name"])
+
+            result.append({
+                "id": row["id"],
+                "name": row["name"],
+                "client": row["client"],
+                "start_date": row["start_date"],
+                "end_date": row["end_date"],
+                "status": row["status"],
+                "note": row["note"],
+                "baseline_at": row["baseline_at"],
+                "is_overall": "OVERALL OFFICINA" in name or "OVERALL" in note or "WORKSHOP_ROLLUP" in note,
+                "is_workshop_rollup": "WORKSHOP_ROLLUP" in note,
+            })
+
+        return {
+            "ok": True,
+            "projects": result,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects-sheet/matrix/{project_id}")
+def projects_sheet_matrix(project_id: int):
+    conn = get_connection()
+    try:
+        _projects_sheet_ensure_schema(conn)
+
+        project = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                client,
+                start_date,
+                end_date,
+                status,
+                note,
+                baseline_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        if _projects_sheet_is_overall(project):
+            rollup_rows = conn.execute(
+                """
+                SELECT
+                    overall_project_id,
+                    source_old_project_id,
+                    source_project_name,
+                    role,
+                    week,
+                    period_key,
+                    required
+                FROM workshop_rollup_sources
+                WHERE COALESCE(required, 0) <> 0
+                ORDER BY role, source_project_name, period_key
+                """
+            ).fetchall()
+
+            return {
+                "ok": True,
+                "project": dict(project),
+                "is_overall": True,
+                "roles": [],
+                "workshop_rows": [
+                    {
+                        "overall_project_id": row["overall_project_id"],
+                        "source_old_project_id": row["source_old_project_id"],
+                        "source_project_name": row["source_project_name"],
+                        "project_name": row["source_project_name"],
+                        "role": row["role"],
+                        "week": row["week"],
+                        "period_key": row["period_key"],
+                        "required": row["required"],
+                    }
+                    for row in rollup_rows
+                ],
+            }
+
+        rows = conn.execute(
+            """
+            SELECT
+                role,
+                week,
+                COALESCE(NULLIF(period_key, 0), 2600 + week) AS period_key,
+                quantity,
+                note
+            FROM demands
+            WHERE project_id = ?
+            ORDER BY role, period_key
+            """,
+            (project_id,),
+        ).fetchall()
+
+        by_role = {}
+        for row in rows:
+            role = _projects_sheet_norm(row["role"])
+            if not role:
+                continue
+
+            if role not in by_role:
+                by_role[role] = {
+                    "role": role,
+                    "weeks": {},
+                    "total": 0,
+                }
+
+            period_key = int(row["period_key"] or 0)
+            week = int(row["week"] or _projects_sheet_week_from_period(period_key))
+            quantity = float(row["quantity"] or 0)
+
+            by_role[role]["weeks"][str(period_key)] = {
+                "week": week,
+                "period_key": period_key,
+                "quantity": quantity,
+                "note": row["note"] or "",
+            }
+            by_role[role]["total"] += quantity
+
+        return {
+            "ok": True,
+            "project": dict(project),
+            "is_overall": False,
+            "roles": list(by_role.values()),
+            "workshop_rows": [],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects-sheet/save-project")
+def projects_sheet_save_project(payload: dict):
+    project_id = int(payload.get("id") or 0)
+    name = str(payload.get("name") or "").strip()
+    client = str(payload.get("client") or "").strip()
+    start_date = str(payload.get("start_date") or "").strip()
+    end_date = str(payload.get("end_date") or "").strip()
+    status = str(payload.get("status") or "attivo").strip()
+    note = str(payload.get("note") or "").strip()
+    is_workshop_rollup = bool(payload.get("is_workshop_rollup"))
+
+    if not name:
+        return {"ok": False, "error": "Nome/codice commessa obbligatorio"}
+
+    conn = get_connection()
+    try:
+        _projects_sheet_ensure_schema(conn)
+
+        normalized_note = note
+        if is_workshop_rollup and "WORKSHOP_ROLLUP" not in _projects_sheet_norm(normalized_note):
+            normalized_note = (normalized_note + " | WORKSHOP_ROLLUP").strip(" |")
+        if "OVERALL OFFICINA" in _projects_sheet_norm(name) and "OVERALL" not in _projects_sheet_norm(normalized_note):
+            normalized_note = (normalized_note + " | OVERALL | WORKSHOP_ROLLUP").strip(" |")
+
+        if project_id:
+            existing = conn.execute(
+                "SELECT id FROM projects WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            if not existing:
+                return {"ok": False, "error": "Commessa non trovata"}
+
+            conn.execute(
+                """
+                UPDATE projects
+                SET name = ?,
+                    client = ?,
+                    start_date = ?,
+                    end_date = ?,
+                    status = ?,
+                    note = ?,
+                    baseline_at = COALESCE(NULLIF(baseline_at, ''), '2026-04-07T00:00:00')
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    client,
+                    start_date,
+                    end_date,
+                    status,
+                    normalized_note,
+                    project_id,
+                ),
+            )
+        else:
+            duplicate = conn.execute(
+                "SELECT id FROM projects WHERE UPPER(name) = UPPER(?) LIMIT 1",
+                (name,),
+            ).fetchone()
+            if duplicate:
+                return {"ok": False, "error": "Esiste già una commessa con questo nome"}
+
+            cur = conn.execute(
+                """
+                INSERT INTO projects(
+                    name,
+                    client,
+                    start_date,
+                    end_date,
+                    status,
+                    note,
+                    baseline_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    client,
+                    start_date,
+                    end_date,
+                    status,
+                    (normalized_note + " | BASELINE_CREATE").strip(" |"),
+                    _projects_sheet_datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+            project_id = int(cur.lastrowid)
+
+        conn.commit()
+
+        row = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                client,
+                start_date,
+                end_date,
+                status,
+                note,
+                baseline_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
+        return {
+            "ok": True,
+            "project": dict(row),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/projects-sheet/save-demands")
+def projects_sheet_save_demands(payload: dict):
+    project_id = int(payload.get("project_id") or 0)
+    rows = payload.get("rows") or []
+    baseline_create = bool(payload.get("baseline_create"))
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+
+    if not isinstance(rows, list):
+        return {"ok": False, "error": "rows non valido"}
+
+    conn = get_connection()
+    try:
+        _projects_sheet_ensure_schema(conn)
+
+        project = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                note,
+                baseline_at
+            FROM projects
+            WHERE id = ?
+            """,
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        if _projects_sheet_is_overall(project):
+            return {"ok": False, "error": "OVERALL è un rollup: modifica le sottocommesse officina"}
+
+        changed = 0
+        inserted = 0
+        history = 0
+
+        for row in rows:
+            role = _projects_sheet_norm(row.get("role") or "")
+            quantities = row.get("quantities") or {}
+
+            if not role or not isinstance(quantities, dict):
+                continue
+
+            for raw_period_key, raw_quantity in quantities.items():
+                period_key = _projects_sheet_period_key(raw_period_key)
+                week = _projects_sheet_week_from_period(period_key)
+                quantity = float(raw_quantity or 0)
+
+                existing = conn.execute(
+                    """
+                    SELECT id, quantity
+                    FROM demands
+                    WHERE project_id = ?
+                      AND UPPER(role) = ?
+                      AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                    LIMIT 1
+                    """,
+                    (project_id, role, period_key),
+                ).fetchone()
+
+                if existing:
+                    old_quantity = float(existing["quantity"] or 0)
+                    if old_quantity == quantity:
+                        continue
+
+                    conn.execute(
+                        """
+                        UPDATE demands
+                        SET quantity = ?,
+                            week = ?,
+                            period_key = ?,
+                            role = ?,
+                            note = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            quantity,
+                            week,
+                            period_key,
+                            role,
+                            "PROJECT_SHEET_BASELINE" if baseline_create else "PROJECT_SHEET_UPDATE",
+                            existing["id"],
+                        ),
+                    )
+                    changed += 1
+
+                    if not baseline_create:
+                        _projects_sheet_insert_history(
+                            conn,
+                            project,
+                            role,
+                            week,
+                            period_key,
+                            old_quantity,
+                            quantity,
+                            "PROJECT_SHEET_UPDATE",
+                        )
+                        history += 1
+
+                    try:
+                        release_allocations_for_zero_demand(conn, project_id, role, week)
+                    except Exception:
+                        pass
+
+                else:
+                    if quantity <= 0:
+                        continue
+
+                    cur = conn.execute(
+                        """
+                        INSERT INTO demands(project_id, week, period_key, role, quantity, note)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            project_id,
+                            week,
+                            period_key,
+                            role,
+                            quantity,
+                            "PROJECT_SHEET_BASELINE" if baseline_create else "PROJECT_SHEET_INSERT",
+                        ),
+                    )
+                    inserted += 1
+
+                    if not baseline_create:
+                        _projects_sheet_insert_history(
+                            conn,
+                            project,
+                            role,
+                            week,
+                            period_key,
+                            0,
+                            quantity,
+                            "PROJECT_SHEET_INSERT",
+                        )
+                        history += 1
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "changed": changed,
+            "inserted": inserted,
+            "history": history,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/projects-sheet/test-changes")
+def projects_sheet_test_changes():
+    conn = get_connection()
+    try:
+        demand_rows = conn.execute(
+            """
+            SELECT
+                d.id,
+                p.name AS project_name,
+                d.role,
+                d.week,
+                COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
+                d.quantity,
+                d.note
+            FROM demands d
+            JOIN projects p ON p.id = d.project_id
+            WHERE COALESCE(d.note, '') LIKE '%PROJECT_SHEET%'
+               OR COALESCE(d.note, '') LIKE '%PROJECT_MATRIX%'
+               OR COALESCE(d.note, '') LIKE '%V2_RANGE%'
+               OR COALESCE(d.note, '') LIKE '%PLANNER V2%'
+               OR COALESCE(d.note, '') LIKE '%BASELINE_CREATE%'
+            ORDER BY d.id DESC
+            """
+        ).fetchall()
+
+        history_rows = []
+        try:
+            history_rows = conn.execute(
+                """
+                SELECT *
+                FROM demand_history
+                WHERE COALESCE(note, '') LIKE '%PROJECT_SHEET%'
+                   OR COALESCE(note, '') LIKE '%PROJECT_MATRIX%'
+                   OR COALESCE(note, '') LIKE '%V2_RANGE%'
+                   OR COALESCE(note, '') LIKE '%PLANNER V2%'
+                ORDER BY id DESC
+                """
+            ).fetchall()
+        except Exception:
+            history_rows = []
+
+        return {
+            "ok": True,
+            "demands": [dict(row) for row in demand_rows],
+            "history": [dict(row) for row in history_rows],
+        }
+    finally:
+        conn.close()
+
+# === PROJECTS SHEET V2 BACKEND END ===
+
+# === PERIOD KEY UNIFIED BACKEND START ===
+
+def period_key_range_inclusive(start_value, end_value, default_year_short: int = DEFAULT_YEAR_SHORT):
+    """
+    Restituisce period_key validi tra start e end.
+    Accetta sia week 17 sia period_key 2617.
+    Gestisce anche passaggio anno: 2652 -> 2701.
+    """
+    start_key = period_key_from_week(start_value, default_year_short)
+    end_key = period_key_from_week(end_value, default_year_short)
+
+    if start_key <= 0 or end_key <= 0:
+        return []
+
+    if end_key < start_key:
+        start_key, end_key = end_key, start_key
+
+    start_year = start_key // 100
+    start_week = start_key % 100
+    end_year = end_key // 100
+    end_week = end_key % 100
+
+    keys = []
+    year = start_year
+    week = start_week
+
+    guard = 0
+
+    while True:
+        guard += 1
+
+        if guard > 520:
+            break
+
+        if 1 <= week <= 52:
+            keys.append(year * 100 + week)
+
+        if year == end_year and week == end_week:
+            break
+
+        week += 1
+
+        if week > 52:
+            year += 1
+            week = 1
+
+    return keys
+
+
+def period_key_payload_range(payload):
+    """
+    Utility per endpoint futuri:
+    preferisce period_key_from/to, ma accetta week_from/to.
+    """
+    if hasattr(payload, "dict"):
+        data = payload.dict()
+    elif isinstance(payload, dict):
+        data = payload
+    else:
+        data = {}
+
+    start = (
+        data.get("period_key_from")
+        or data.get("periodKeyFrom")
+        or data.get("week_from")
+        or data.get("weekFrom")
+        or data.get("from_week")
+        or data.get("fromWeek")
+        or 0
+    )
+
+    end = (
+        data.get("period_key_to")
+        or data.get("periodKeyTo")
+        or data.get("week_to")
+        or data.get("weekTo")
+        or data.get("to_week")
+        or data.get("toWeek")
+        or start
+    )
+
+    return period_key_range_inclusive(start, end)
+
+# === PERIOD KEY UNIFIED BACKEND END ===
+
+# === GANTT V2 OLD STYLE BACKEND START ===
+
+def _gantt_to_period_key(value, default_year_short: int = DEFAULT_YEAR_SHORT):
+    try:
+        value = int(float(value or 0))
+    except Exception:
+        return 0
+
+    if value <= 0:
+        return 0
+
+    if value >= 1000:
+        return value
+
+    return int(default_year_short) * 100 + value
+
+
+def _gantt_period_key_range(start_value, end_value):
+    start_key = _gantt_to_period_key(start_value)
+    end_key = _gantt_to_period_key(end_value or start_value)
+
+    if start_key <= 0 or end_key <= 0:
+        return []
+
+    if end_key < start_key:
+        start_key, end_key = end_key, start_key
+
+    start_year = start_key // 100
+    start_week = start_key % 100
+    end_year = end_key // 100
+    end_week = end_key % 100
+
+    result = []
+    year = start_year
+    week = start_week
+    guard = 0
+
+    while True:
+        guard += 1
+        if guard > 520:
+            break
+
+        if 1 <= week <= 52:
+            result.append(year * 100 + week)
+
+        if year == end_year and week == end_week:
+            break
+
+        week += 1
+        if week > 52:
+            year += 1
+            week = 1
+
+    return result
+
+
+def _gantt_payload_period_range(payload: dict):
+    start_value = (
+        payload.get("period_key_from")
+        or payload.get("periodKeyFrom")
+        or payload.get("week_from")
+        or payload.get("weekFrom")
+        or payload.get("from")
+        or payload.get("period_from")
+        or 0
+    )
+
+    end_value = (
+        payload.get("period_key_to")
+        or payload.get("periodKeyTo")
+        or payload.get("week_to")
+        or payload.get("weekTo")
+        or payload.get("to")
+        or payload.get("period_to")
+        or start_value
+    )
+
+    return _gantt_period_key_range(start_value, end_value)
+
+
+@app.post("/api/gantt/assign-range")
+def gantt_assign_range(payload: dict):
+    resource_id = int(payload.get("resource_id") or 0)
+    project_id = int(payload.get("project_id") or 0)
+    role = normalize_role(payload.get("role") or "")
+    hours = float(payload.get("hours") or 40)
+    note = clean_text(payload.get("note") or "GANTT_V2_ASSIGN")
+
+    if not resource_id:
+        return {"ok": False, "error": "resource_id obbligatorio"}
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+
+    if not role:
+        return {"ok": False, "error": "role obbligatoria"}
+
+    period_keys = _gantt_payload_period_range(payload)
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    conn = get_connection()
+    try:
+        resource = get_resource_or_none(conn, resource_id)
+        if not resource:
+            return {"ok": False, "error": "Risorsa non trovata"}
+
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        inserted = 0
+        skipped = 0
+        rebalanced = []
+
+        for period_key in period_keys:
+            week = week_from_period_key(period_key)
+
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM allocations
+                WHERE resource_id = ?
+                  AND project_id = ?
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                LIMIT 1
+                """,
+                (resource_id, project_id, role, period_key),
+            ).fetchone()
+
+            if existing:
+                skipped += 1
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO allocations(
+                    resource_id,
+                    project_id,
+                    week,
+                    period_key,
+                    role,
+                    hours,
+                    load_percent,
+                    note
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resource_id,
+                    project_id,
+                    week,
+                    period_key,
+                    role,
+                    hours,
+                    100,
+                    note,
+                ),
+            )
+
+            inserted += 1
+            rebalanced.append(rebalance_resource_week(conn, resource_id, week))
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "inserted": inserted,
+            "skipped": skipped,
+            "rebalanced": rebalanced,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/gantt/unassign-range")
+def gantt_unassign_range(payload: dict):
+    resource_id = int(payload.get("resource_id") or 0)
+    project_id = int(payload.get("project_id") or 0)
+    role = normalize_role(payload.get("role") or "")
+    reason = clean_text(payload.get("reason") or "GANTT_V2_UNASSIGN")
+    note = clean_text(payload.get("note") or "Rimozione da Gantt V2")
+    period_keys = _gantt_payload_period_range(payload)
+
+    if not resource_id:
+        return {"ok": False, "error": "resource_id obbligatorio"}
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    conn = get_connection()
+    try:
+        removed = 0
+        allocation_ids = []
+
+        for period_key in period_keys:
+            week = week_from_period_key(period_key)
+
+            params = [resource_id, period_key]
+            where = """
+                resource_id = ?
+                AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+            """
+
+            if project_id:
+                where += " AND project_id = ?"
+                params.append(project_id)
+
+            if role:
+                where += " AND UPPER(role) = ?"
+                params.append(role)
+
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM allocations
+                WHERE {where}
+                ORDER BY id ASC
+                """,
+                tuple(params),
+            ).fetchall()
+
+            for row in rows:
+                ok = move_allocation_to_history(
+                    conn,
+                    int(row["id"]),
+                    reason,
+                    note,
+                )
+                if ok:
+                    removed += 1
+                    allocation_ids.append(int(row["id"]))
+
+            rebalance_resource_week(conn, resource_id, week)
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "removed": removed,
+            "allocation_ids": allocation_ids,
+        }
+    finally:
+        conn.close()
+
+# === GANTT V2 OLD STYLE BACKEND END ===
+
+# === OLD WORKFLOW GANTT RESOURCES BACKEND START ===
+
+def _ow_to_period_key(value, default_year_short: int = DEFAULT_YEAR_SHORT):
+    try:
+        value = int(float(value or 0))
+    except Exception:
+        return 0
+
+    if value <= 0:
+        return 0
+
+    if value >= 1000:
+        return value
+
+    return int(default_year_short) * 100 + value
+
+
+def _ow_week_from_period_key(value):
+    try:
+        value = int(float(value or 0))
+    except Exception:
+        return 0
+
+    if value >= 1000:
+        return value % 100
+
+    return value
+
+
+def _ow_period_range(start_value, end_value):
+    start_key = _ow_to_period_key(start_value)
+    end_key = _ow_to_period_key(end_value or start_value)
+
+    if start_key <= 0 or end_key <= 0:
+        return []
+
+    if end_key < start_key:
+        start_key, end_key = end_key, start_key
+
+    start_year = start_key // 100
+    start_week = start_key % 100
+    end_year = end_key // 100
+    end_week = end_key % 100
+
+    keys = []
+    year = start_year
+    week = start_week
+    guard = 0
+
+    while True:
+        guard += 1
+        if guard > 520:
+            break
+
+        if 1 <= week <= 52:
+            keys.append(year * 100 + week)
+
+        if year == end_year and week == end_week:
+            break
+
+        week += 1
+        if week > 52:
+            year += 1
+            week = 1
+
+    return keys
+
+
+def _ow_payload_range(payload: dict):
+    start = (
+        payload.get("period_key_from")
+        or payload.get("periodKeyFrom")
+        or payload.get("period_from")
+        or payload.get("periodFrom")
+        or payload.get("week_from")
+        or payload.get("weekFrom")
+        or payload.get("from")
+        or 0
+    )
+
+    end = (
+        payload.get("period_key_to")
+        or payload.get("periodKeyTo")
+        or payload.get("period_to")
+        or payload.get("periodTo")
+        or payload.get("week_to")
+        or payload.get("weekTo")
+        or payload.get("to")
+        or start
+    )
+
+    return _ow_period_range(start, end)
+
+
+@app.get("/api/old-workflow/gantt-state")
+def old_workflow_gantt_state():
+    conn = get_connection()
+    try:
+        resources = conn.execute(
+            """
+            SELECT id, name, role, availability_note, is_active
+            FROM resources
+            ORDER BY role, name
+            """
+        ).fetchall()
+
+        projects = conn.execute(
+            """
+            SELECT id, name, client, start_date, end_date, status, note
+            FROM projects
+            ORDER BY name
+            """
+        ).fetchall()
+
+        demands = conn.execute(
+            """
+            SELECT
+                d.id,
+                d.project_id,
+                p.name AS project_name,
+                d.week,
+                COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
+                d.role,
+                d.quantity,
+                d.note
+            FROM demands d
+            JOIN projects p ON p.id = d.project_id
+            ORDER BY p.name, d.role, period_key
+            """
+        ).fetchall()
+
+        allocations = conn.execute(
+            """
+            SELECT
+                a.id,
+                a.resource_id,
+                r.name AS resource_name,
+                r.role AS resource_role,
+                r.availability_note AS resource_availability_note,
+                r.is_active AS resource_is_active,
+                a.project_id,
+                p.name AS project_name,
+                a.week,
+                COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key,
+                a.role,
+                a.hours,
+                a.load_percent,
+                a.note
+            FROM allocations a
+            JOIN resources r ON r.id = a.resource_id
+            JOIN projects p ON p.id = a.project_id
+            ORDER BY r.name, period_key, p.name
+            """
+        ).fetchall()
+
+        allocation_history = []
+        try:
+            allocation_history = conn.execute(
+                """
+                SELECT *
+                FROM allocation_history
+                ORDER BY id DESC
+                LIMIT 1000
+                """
+            ).fetchall()
+        except Exception:
+            allocation_history = []
+
+        demand_history = []
+        try:
+            demand_history = conn.execute(
+                """
+                SELECT *
+                FROM demand_history
+                ORDER BY id DESC
+                LIMIT 1000
+                """
+            ).fetchall()
+        except Exception:
+            demand_history = []
+
+        return {
+            "ok": True,
+            "resources": [dict(row) for row in resources],
+            "projects": [dict(row) for row in projects],
+            "demands": [dict(row) for row in demands],
+            "allocations": [dict(row) for row in allocations],
+            "allocation_history": [dict(row) for row in allocation_history],
+            "demand_history": [dict(row) for row in demand_history],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/old-workflow/gantt-assign")
+def old_workflow_gantt_assign(payload: dict):
+    resource_id = int(payload.get("resource_id") or 0)
+    project_id = int(payload.get("project_id") or 0)
+    role = normalize_role(payload.get("role") or "")
+    hours = float(payload.get("hours") or 40)
+    note = clean_text(payload.get("note") or "GANTT_OLD_WORKFLOW_ASSIGN")
+    period_keys = _ow_payload_range(payload)
+
+    if not resource_id:
+        return {"ok": False, "error": "resource_id obbligatorio"}
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+
+    if not role:
+        return {"ok": False, "error": "mansione obbligatoria"}
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    conn = get_connection()
+    try:
+        resource = get_resource_or_none(conn, resource_id)
+        if not resource:
+            return {"ok": False, "error": "Risorsa non trovata"}
+
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        inserted = 0
+        skipped = 0
+        conflicts = []
+
+        for period_key in period_keys:
+            week = week_from_period_key(period_key)
+
+            duplicate = conn.execute(
+                """
+                SELECT id
+                FROM allocations
+                WHERE resource_id = ?
+                  AND project_id = ?
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                LIMIT 1
+                """,
+                (resource_id, project_id, role, period_key),
+            ).fetchone()
+
+            if duplicate:
+                skipped += 1
+                continue
+
+            existing_same_period = conn.execute(
+                """
+                SELECT
+                    a.id,
+                    p.name AS project_name,
+                    a.role,
+                    a.load_percent
+                FROM allocations a
+                JOIN projects p ON p.id = a.project_id
+                WHERE a.resource_id = ?
+                  AND COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) = ?
+                ORDER BY a.id
+                """,
+                (resource_id, period_key),
+            ).fetchall()
+
+            if len(existing_same_period) >= 2:
+                conflicts.append({
+                    "period_key": period_key,
+                    "reason": "Risorsa già su 2 allocazioni",
+                    "rows": [dict(row) for row in existing_same_period],
+                })
+                skipped += 1
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO allocations(
+                    resource_id,
+                    project_id,
+                    week,
+                    period_key,
+                    role,
+                    hours,
+                    load_percent,
+                    note
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resource_id,
+                    project_id,
+                    week,
+                    period_key,
+                    role,
+                    hours,
+                    100,
+                    note,
+                ),
+            )
+
+            inserted += 1
+            rebalance_resource_week(conn, resource_id, week)
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "inserted": inserted,
+            "skipped": skipped,
+            "conflicts": conflicts,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/old-workflow/gantt-unassign")
+def old_workflow_gantt_unassign(payload: dict):
+    resource_id = int(payload.get("resource_id") or 0)
+    project_id = int(payload.get("project_id") or 0)
+    role = normalize_role(payload.get("role") or "")
+    period_keys = _ow_payload_range(payload)
+    reason = clean_text(payload.get("reason") or "GANTT_OLD_WORKFLOW_UNASSIGN")
+    note = clean_text(payload.get("note") or "Svincolo da Gantt")
+
+    if not resource_id:
+        return {"ok": False, "error": "resource_id obbligatorio"}
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    conn = get_connection()
+    try:
+        removed = 0
+        ids = []
+
+        for period_key in period_keys:
+            week = week_from_period_key(period_key)
+
+            params = [resource_id, period_key]
+            where = """
+                resource_id = ?
+                AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+            """
+
+            if project_id:
+                where += " AND project_id = ?"
+                params.append(project_id)
+
+            if role:
+                where += " AND UPPER(role) = ?"
+                params.append(role)
+
+            rows = conn.execute(
+                f"""
+                SELECT id
+                FROM allocations
+                WHERE {where}
+                ORDER BY id
+                """,
+                tuple(params),
+            ).fetchall()
+
+            for row in rows:
+                ok = move_allocation_to_history(conn, int(row["id"]), reason, note)
+                if ok:
+                    removed += 1
+                    ids.append(int(row["id"]))
+
+            rebalance_resource_week(conn, resource_id, week)
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "removed": removed,
+            "allocation_ids": ids,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/old-workflow/gantt-demand-upsert")
+def old_workflow_gantt_demand_upsert(payload: dict):
+    project_id = int(payload.get("project_id") or 0)
+    role = normalize_role(payload.get("role") or "")
+    quantity = float(payload.get("quantity") or 0)
+    period_keys = _ow_payload_range(payload)
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+
+    if not role:
+        return {"ok": False, "error": "mansione obbligatoria"}
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    conn = get_connection()
+    try:
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        changed = 0
+        inserted = 0
+        history = 0
+
+        for period_key in period_keys:
+            week = week_from_period_key(period_key)
+
+            existing = conn.execute(
+                """
+                SELECT id, quantity
+                FROM demands
+                WHERE project_id = ?
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                LIMIT 1
+                """,
+                (project_id, role, period_key),
+            ).fetchone()
+
+            if existing:
+                old_quantity = float(existing["quantity"] or 0)
+                if old_quantity == quantity:
+                    continue
+
+                conn.execute(
+                    """
+                    UPDATE demands
+                    SET quantity = ?,
+                        week = ?,
+                        period_key = ?,
+                        role = ?,
+                        note = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        quantity,
+                        week,
+                        period_key,
+                        role,
+                        "GANTT_OLD_WORKFLOW_DEMAND_UPDATE",
+                        existing["id"],
+                    ),
+                )
+                changed += 1
+
+                conn.execute(
+                    """
+                    INSERT INTO demand_history(
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        old_quantity,
+                        new_quantity,
+                        note
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        old_quantity,
+                        quantity,
+                        "GANTT_OLD_WORKFLOW_DEMAND_UPDATE",
+                    ),
+                )
+                history += 1
+            else:
+                if quantity <= 0:
+                    continue
+
+                conn.execute(
+                    """
+                    INSERT INTO demands(project_id, week, period_key, role, quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        quantity,
+                        "GANTT_OLD_WORKFLOW_DEMAND_INSERT",
+                    ),
+                )
+                inserted += 1
+
+                conn.execute(
+                    """
+                    INSERT INTO demand_history(
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        old_quantity,
+                        new_quantity,
+                        note
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        week,
+                        period_key,
+                        role,
+                        0,
+                        quantity,
+                        "GANTT_OLD_WORKFLOW_DEMAND_INSERT",
+                    ),
+                )
+                history += 1
+
+            try:
+                release_allocations_for_zero_demand(conn, project_id, role, week)
+            except Exception:
+                pass
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "changed": changed,
+            "inserted": inserted,
+            "history": history,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/old-workflow/resources-save")
+def old_workflow_resources_save(payload: dict):
+    rows = payload.get("rows") or []
+
+    if not isinstance(rows, list):
+        return {"ok": False, "error": "rows non valido"}
+
+    conn = get_connection()
+    try:
+        changed = 0
+
+        for item in rows:
+            resource_id = int(item.get("id") or 0)
+            if not resource_id:
+                continue
+
+            name = clean_text(item.get("name") or "")
+            role = normalize_role(item.get("role") or "")
+            availability_note = clean_text(item.get("availability_note") or "")
+            is_active = 1 if int(item.get("is_active") or 0) else 0
+
+            conn.execute(
+                """
+                UPDATE resources
+                SET name = ?,
+                    role = ?,
+                    availability_note = ?,
+                    is_active = ?
+                WHERE id = ?
+                """,
+                (
+                    name,
+                    role,
+                    availability_note,
+                    is_active,
+                    resource_id,
+                ),
+            )
+            changed += 1
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "changed": changed,
+        }
+    finally:
+        conn.close()
+
+# === OLD WORKFLOW GANTT RESOURCES BACKEND END ===
