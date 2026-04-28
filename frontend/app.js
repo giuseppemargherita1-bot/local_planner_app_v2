@@ -31,8 +31,21 @@ const availableResourceList = document.getElementById("availableResourceList");
 
 const API_BASE = "http://127.0.0.1:8000";
 
-const CURRENT_PERIOD_KEY = 2617;
-const PERIOD_YEAR_SHORT = 26;
+function getIsoWeekPeriodKey(date = new Date()) {
+  const utcDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const isoDay = utcDate.getUTCDay() || 7;
+  utcDate.setUTCDate(utcDate.getUTCDate() + 4 - isoDay);
+
+  const isoYear = utcDate.getUTCFullYear();
+  const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  const week = Math.ceil((((utcDate - yearStart) / 86400000) + 1) / 7);
+  const yearShort = isoYear % 100;
+
+  return yearShort * 100 + week;
+}
+
+const CURRENT_PERIOD_KEY = getIsoWeekPeriodKey();
+const PERIOD_YEAR_SHORT = Math.floor(CURRENT_PERIOD_KEY / 100);
 const FIRST_WEEK = 1;
 const LAST_WEEK = 52;
 
@@ -2954,17 +2967,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function bindResourcesSheetPatch() {
-    const topbar = document.querySelector(".topbar-actions");
     const sheet = qs("resourcesSheet");
-
-    if (topbar && !qs("topResourcesBtn")) {
-      const buttons = Array.from(topbar.querySelectorAll("button"));
-      const resourcesButton = buttons.find((button) => String(button.textContent || "").trim().toUpperCase() === "RISORSE");
-      const refreshButton = buttons.find((button) => String(button.textContent || "").trim().toUpperCase() === "AGGIORNA");
-
-      if (resourcesButton) resourcesButton.id = "topResourcesBtn";
-      if (refreshButton) refreshButton.id = "topRefreshBtn";
-    }
 
     const topResourcesBtn = qs("topResourcesBtn");
     const topRefreshBtn = qs("topRefreshBtn");
@@ -2975,7 +2978,19 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     if (topResourcesBtn && !topResourcesBtn.dataset.resourcesSheetBound) {
       topResourcesBtn.dataset.resourcesSheetBound = "1";
-      topResourcesBtn.addEventListener("click", openResourcesSheet);
+      topResourcesBtn.addEventListener("click", (event) => {
+        if (typeof window.openOldWorkflowResources === "function") {
+          event.preventDefault();
+          event.stopPropagation();
+          event.stopImmediatePropagation();
+          window.openOldWorkflowResources().catch((error) => {
+            console.error(error);
+            alert(error.message || "Errore apertura Risorse.");
+          });
+          return;
+        }
+        openResourcesSheet();
+      });
     }
 
     if (topRefreshBtn && !topRefreshBtn.dataset.resourcesSheetBound) {
@@ -5205,13 +5220,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     const plannerSide = document.querySelector(".planner-side");
     const plannerBottom = document.querySelector(".planner-bottom");
     const resourcesSheet = document.getElementById("resourcesSheet");
-    const ganttSheet = document.getElementById("oldWorkflowGanttSheet");
+    const ganttSheet = document.getElementById("oldWorkflowGanttPort");
+    const resourcesOldSheet = document.getElementById("oldWorkflowResourcesPort");
 
     if (plannerMain) plannerMain.hidden = true;
     if (plannerSide) plannerSide.hidden = true;
     if (plannerBottom) plannerBottom.hidden = true;
     if (resourcesSheet) resourcesSheet.hidden = true;
     if (ganttSheet) ganttSheet.hidden = true;
+    if (resourcesOldSheet) resourcesOldSheet.hidden = true;
     if (commesse) commesse.hidden = false;
 
     renderCommesseSheet();
@@ -5754,7 +5771,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!commesse || commesse.hidden) return;
 
     document.querySelectorAll(
-      ".planner-main, .planner-side, .planner-bottom, #resourcesSheet, #oldWorkflowGanttSheet"
+      ".planner-main, .planner-side, .planner-bottom, #resourcesSheet, #oldWorkflowGanttPort, #oldWorkflowResourcesPort, #projectsSheetV2"
     ).forEach((node) => {
       if (node && node.id !== "oldWorkflowCommesseSheet") {
         node.hidden = true;
@@ -6658,7 +6675,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   function hideOperationalSheets() {
     const ids = [
       "oldWorkflowCommesseSheet",
-      "oldWorkflowGanttSheet",
+      "oldWorkflowGanttPort",
+      "oldWorkflowResourcesPort",
       "resourcesSheet",
     ];
 
@@ -7469,7 +7487,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       roleFilter: "",
       statusFilter: "",
       sortBy: "name_asc",
-      visibleColumns: loadVisibleResourceColumns(),
+      visibleColumns: [],
     },
   };
 
@@ -7508,6 +7526,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   ];
 
   const DEFAULT_RESOURCE_VISIBLE_COLUMNS = [0, 1, 2, 3, 6, 10, 20, 22, 24, 28, 29, 30];
+  state.resourcesSheet.visibleColumns = loadVisibleResourceColumns();
 
   function norm(value) {
     if (typeof normalizeRole === "function") return normalizeRole(value);
@@ -7875,6 +7894,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (window.__oldWorkflowOperationalIsolationInstalled) return;
     window.__oldWorkflowOperationalIsolationInstalled = true;
 
+    function ensureOperationalShield() {
+      let shield = document.getElementById("operationalSheetShield");
+      if (shield) return shield;
+      shield = document.createElement("div");
+      shield.id = "operationalSheetShield";
+      shield.className = "operational-shield";
+      shield.hidden = true;
+      document.body.appendChild(shield);
+      return shield;
+    }
+
     function operationalOpen() {
       const ids = [
         "oldWorkflowGanttPort",
@@ -7890,6 +7920,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     function update() {
       const active = operationalOpen();
       document.body.classList.toggle("operational-sheet-open", active);
+      const shield = ensureOperationalShield();
 
       ["verticalSplitter", "horizontalSplitter", "sideInnerSplitter"].forEach((id) => {
         const node = document.getElementById(id);
@@ -7906,6 +7937,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (active) {
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
+        const topbar = document.querySelector(".topbar");
+        const top = topbar ? Math.ceil(topbar.getBoundingClientRect().bottom) : 0;
+        shield.style.top = `${top}px`;
+        shield.hidden = false;
+      } else {
+        shield.hidden = true;
       }
     }
 
@@ -7926,7 +7963,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const observer = new MutationObserver(update);
 
     function observe() {
-      ["oldWorkflowGanttPort", "oldWorkflowResourcesPort", "projectsSheetV2", "ganttSheetV2", "resourcesSheet"].forEach((id) => {
+      ["oldWorkflowGanttPort", "oldWorkflowResourcesPort", "projectsSheetV2", "oldWorkflowCommesseSheet", "ganttSheetV2", "resourcesSheet"].forEach((id) => {
         const node = document.getElementById(id);
         if (node && node.dataset.isolationObserved !== "1") {
           node.dataset.isolationObserved = "1";
@@ -9012,39 +9049,61 @@ document.addEventListener("DOMContentLoaded", async () => {
     renderResourcesSheet();
   }
 
+  function bindTopbarRoute(button, datasetKey, handler, fallbackMessage = "Errore apertura foglio.") {
+    if (!button || button.dataset[datasetKey] === "1") return;
+    button.dataset[datasetKey] = "1";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      Promise.resolve(handler()).catch((error) => {
+        console.error(error);
+        alert(error?.message || fallbackMessage);
+      });
+    }, true);
+  }
+
   function interceptTopbar() {
+    const plannerById = document.getElementById("topPlannerBtn");
+    const ganttById = document.getElementById("topGanttBtn");
+    const resourcesById = document.getElementById("topResourcesBtn");
+    const projectsById = document.getElementById("topProjectsBtn");
+
+    bindTopbarRoute(ganttById, "oldWorkflowGanttPortBound", openGantt, "Errore apertura Gantt.");
+    bindTopbarRoute(resourcesById, "oldWorkflowResourcesPortBound", openResources, "Errore apertura Risorse.");
+    bindTopbarRoute(plannerById, "oldWorkflowPlannerReturnBound", showPlanner, "Errore apertura Planner.");
+    bindTopbarRoute(
+      projectsById,
+      "oldWorkflowProjectsRouteBound",
+      () => {
+        if (typeof window.openProjectsSheetV2 === "function") {
+          return window.openProjectsSheetV2();
+        }
+        throw new Error("Foglio Progetti non disponibile.");
+      },
+      "Errore apertura foglio Progetti."
+    );
+
     document.querySelectorAll(".topbar-actions button").forEach((button) => {
       const text = norm(button.textContent || "");
-
-      if (text === "GANTT" && button.dataset.oldWorkflowGanttPortBound !== "1") {
-        button.dataset.oldWorkflowGanttPortBound = "1";
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          openGantt().catch((error) => {
-            console.error(error);
-            alert(error.message || "Errore apertura Gantt.");
-          });
-        }, true);
-      }
-
-      if (text === "RISORSE" && button.dataset.oldWorkflowResourcesPortBound !== "1") {
-        button.dataset.oldWorkflowResourcesPortBound = "1";
-        button.addEventListener("click", (event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          event.stopImmediatePropagation();
-          openResources().catch((error) => {
-            console.error(error);
-            alert(error.message || "Errore apertura Risorse.");
-          });
-        }, true);
-      }
-
-      if (text === "PLANNER" && button.dataset.oldWorkflowPlannerReturnBound !== "1") {
-        button.dataset.oldWorkflowPlannerReturnBound = "1";
-        button.addEventListener("click", () => showPlanner(), true);
+      if (text === "GANTT") {
+        bindTopbarRoute(button, "oldWorkflowGanttPortBound", openGantt, "Errore apertura Gantt.");
+      } else if (text === "RISORSE") {
+        bindTopbarRoute(button, "oldWorkflowResourcesPortBound", openResources, "Errore apertura Risorse.");
+      } else if (text === "PLANNER") {
+        bindTopbarRoute(button, "oldWorkflowPlannerReturnBound", showPlanner, "Errore apertura Planner.");
+      } else if (text === "PROGETTI" || text.includes("COMMESSE")) {
+        bindTopbarRoute(
+          button,
+          "oldWorkflowProjectsRouteBound",
+          () => {
+            if (typeof window.openProjectsSheetV2 === "function") {
+              return window.openProjectsSheetV2();
+            }
+            throw new Error("Foglio Progetti non disponibile.");
+          },
+          "Errore apertura foglio Progetti."
+        );
       }
     });
   }
@@ -9056,6 +9115,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   window.openOldWorkflowGantt = openGantt;
   window.openOldWorkflowResources = openResources;
+  window.openOldWorkflowPlanner = showPlanner;
 
   ensureShells();
   disableProvisionalGantt();

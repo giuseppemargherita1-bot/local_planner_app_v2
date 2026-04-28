@@ -2847,6 +2847,20 @@ body.operational-sheet-open #sideInnerSplitter {
   display: none !important;
 }
 
+.operational-shield {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 65000;
+  background: transparent;
+  pointer-events: auto;
+}
+
+.operational-shield[hidden] {
+  display: none !important;
+}
+
 .old-workflow-sheet {
   position: fixed !important;
   top: 96px !important;
