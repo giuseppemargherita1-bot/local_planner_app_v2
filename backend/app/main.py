@@ -1710,3 +1710,409 @@ def workshop_required_map():
         ]
     finally:
         conn.close()
+
+@app.post("/api/demands/upsert-range")
+def upsert_demand_range(payload: dict):
+    project_id = int(payload.get("project_id") or 0)
+    role = str(payload.get("role") or "").strip().upper()
+    quantity = float(payload.get("quantity") or 0)
+    week_from = int(payload.get("week_from") or 0)
+    week_to = int(payload.get("week_to") or week_from or 0)
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+    if not role:
+        return {"ok": False, "error": "role obbligatorio"}
+    if week_from <= 0 or week_to <= 0:
+        return {"ok": False, "error": "week_from/week_to obbligatori"}
+    if week_to < week_from:
+        week_from, week_to = week_to, week_from
+
+    conn = get_connection()
+    try:
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        changed = 0
+
+        for week in range(week_from, week_to + 1):
+            period_key = 2600 + int(week)
+
+            existing = conn.execute(
+                """
+                SELECT id, quantity
+                FROM demands
+                WHERE project_id = ?
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                LIMIT 1
+                """,
+                (project_id, role, period_key),
+            ).fetchone()
+
+            if existing:
+                old_quantity = float(existing["quantity"] or 0)
+                if old_quantity != quantity:
+                    conn.execute(
+                        """
+                        UPDATE demands
+                        SET quantity = ?,
+                            week = ?,
+                            period_key = ?,
+                            note = COALESCE(note, '') || ' | V2_RANGE_UPDATE'
+                        WHERE id = ?
+                        """,
+                        (quantity, week, period_key, existing["id"]),
+                    )
+
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO demand_history(
+                                project_id,
+                                project_name,
+                                role,
+                                week,
+                                period_key,
+                                old_quantity,
+                                new_quantity,
+                                note
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                project_id,
+                                project["name"],
+                                role,
+                                week,
+                                period_key,
+                                old_quantity,
+                                quantity,
+                                "V2_RANGE_UPDATE",
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+                    changed += 1
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO demands(project_id, week, period_key, role, quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (project_id, week, period_key, role, quantity, "V2_RANGE_INSERT"),
+                )
+
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO demand_history(
+                            project_id,
+                            project_name,
+                            role,
+                            week,
+                            period_key,
+                            old_quantity,
+                            new_quantity,
+                            note
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            project_id,
+                            project["name"],
+                            role,
+                            week,
+                            period_key,
+                            0,
+                            quantity,
+                            "V2_RANGE_INSERT",
+                        ),
+                    )
+                except Exception:
+                    pass
+
+                changed += 1
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "project_id": project_id,
+            "project_name": project["name"],
+            "role": role,
+            "quantity": quantity,
+            "week_from": week_from,
+            "week_to": week_to,
+            "changed": changed,
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/project-role-row")
+def create_project_role_row(payload: dict):
+    project_id = int(payload.get("project_id") or 0)
+    role = str(payload.get("role") or "").strip().upper()
+    quantity = float(payload.get("quantity") or 0)
+    week_from = int(payload.get("week_from") or 0)
+    week_to = int(payload.get("week_to") or week_from or 0)
+
+    if not project_id:
+        return {"ok": False, "error": "project_id obbligatorio"}
+    if not role:
+        return {"ok": False, "error": "role obbligatorio"}
+    if quantity <= 0:
+        return {"ok": False, "error": "Per creare una nuova riga mansione, il richiesto deve essere maggiore di 0"}
+    if week_from <= 0:
+        return {"ok": False, "error": "week_from obbligatoria"}
+    if week_to <= 0:
+        week_to = week_from
+    if week_to < week_from:
+        week_from, week_to = week_to, week_from
+
+    # Riusa la stessa logica range: creare riga mansione significa creare demands anche a 0 o quantity scelta.
+    return upsert_demand_range(
+        {
+            "project_id": project_id,
+            "role": role,
+            "quantity": quantity,
+            "week_from": week_from,
+            "week_to": week_to,
+        }
+    )
+
+
+@app.get("/api/roles")
+def list_roles():
+    conn = get_connection()
+    try:
+        roles = set()
+
+        try:
+            rows = conn.execute("SELECT role FROM roles ORDER BY role").fetchall()
+            for row in rows:
+                value = str(row["role"] or "").strip().upper()
+                if value:
+                    roles.add(value)
+        except Exception:
+            pass
+
+        rows = conn.execute("""
+            SELECT role FROM resources
+            UNION
+            SELECT role FROM demands
+            UNION
+            SELECT role FROM allocations
+        """).fetchall()
+
+        for row in rows:
+            value = str(row["role"] or "").strip().upper()
+            if value:
+                roles.add(value)
+
+        return sorted(roles)
+    finally:
+        conn.close()
+
+@app.get("/api/project-demand-matrix/{project_id}")
+def project_demand_matrix(project_id: int):
+    conn = get_connection()
+    try:
+        project = conn.execute(
+            "SELECT id, name, status, note FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        rows = conn.execute(
+            """
+            SELECT
+                role,
+                week,
+                COALESCE(NULLIF(period_key, 0), 2600 + week) AS period_key,
+                quantity,
+                note
+            FROM demands
+            WHERE project_id = ?
+            ORDER BY role, period_key
+            """,
+            (project_id,),
+        ).fetchall()
+
+        by_role = {}
+
+        for row in rows:
+            role = str(row["role"] or "").strip().upper()
+            if not role:
+                continue
+
+            if role not in by_role:
+                by_role[role] = {
+                    "role": role,
+                    "weeks": {},
+                    "total": 0,
+                }
+
+            period_key = int(row["period_key"] or 0)
+            week = int(row["week"] or (period_key % 100))
+            quantity = float(row["quantity"] or 0)
+
+            by_role[role]["weeks"][str(period_key)] = {
+                "week": week,
+                "period_key": period_key,
+                "quantity": quantity,
+                "note": row["note"] or "",
+            }
+            by_role[role]["total"] += quantity
+
+        return {
+            "ok": True,
+            "project": dict(project),
+            "roles": list(by_role.values()),
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/project-demand-matrix/{project_id}")
+def save_project_demand_matrix(project_id: int, payload: dict):
+    role = str(payload.get("role") or "").strip().upper()
+    quantities = payload.get("quantities") or {}
+
+    if not role:
+        return {"ok": False, "error": "role obbligatorio"}
+
+    if not isinstance(quantities, dict):
+        return {"ok": False, "error": "quantities non valido"}
+
+    conn = get_connection()
+    try:
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
+
+        if not project:
+            return {"ok": False, "error": "Commessa non trovata"}
+
+        changed = 0
+
+        for raw_period_key, raw_quantity in quantities.items():
+            period_key = int(raw_period_key)
+            week = period_key % 100
+            quantity = float(raw_quantity or 0)
+
+            existing = conn.execute(
+                """
+                SELECT id, quantity
+                FROM demands
+                WHERE project_id = ?
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                LIMIT 1
+                """,
+                (project_id, role, period_key),
+            ).fetchone()
+
+            if existing:
+                old_quantity = float(existing["quantity"] or 0)
+
+                if old_quantity != quantity:
+                    conn.execute(
+                        """
+                        UPDATE demands
+                        SET quantity = ?,
+                            week = ?,
+                            period_key = ?,
+                            note = COALESCE(note, '') || ' | PROJECT_MATRIX_UPDATE'
+                        WHERE id = ?
+                        """,
+                        (quantity, week, period_key, existing["id"]),
+                    )
+
+                    try:
+                        conn.execute(
+                            """
+                            INSERT INTO demand_history(
+                                project_id,
+                                project_name,
+                                role,
+                                week,
+                                period_key,
+                                old_quantity,
+                                new_quantity,
+                                note
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                project_id,
+                                project["name"],
+                                role,
+                                week,
+                                period_key,
+                                old_quantity,
+                                quantity,
+                                "PROJECT_MATRIX_UPDATE",
+                            ),
+                        )
+                    except Exception:
+                        pass
+
+                    changed += 1
+            else:
+                if quantity <= 0:
+                    continue
+
+                conn.execute(
+                    """
+                    INSERT INTO demands(project_id, week, period_key, role, quantity, note)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (project_id, week, period_key, role, quantity, "PROJECT_MATRIX_INSERT"),
+                )
+
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO demand_history(
+                            project_id,
+                            project_name,
+                            role,
+                            week,
+                            period_key,
+                            old_quantity,
+                            new_quantity,
+                            note
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            project_id,
+                            project["name"],
+                            role,
+                            week,
+                            period_key,
+                            0,
+                            quantity,
+                            "PROJECT_MATRIX_INSERT",
+                        ),
+                    )
+                except Exception:
+                    pass
+
+                changed += 1
+
+        conn.commit()
+        return {"ok": True, "changed": changed}
+    finally:
+        conn.close()

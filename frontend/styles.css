@@ -1971,3 +1971,89 @@ body {
 
 /* === BOTTOM PANEL CLEAN RESIZE PATCH END === */
 
+/* === PLANNER DEMAND ROLE PACKAGE START === */
+
+.open-role-row-modal-btn {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.role-row-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(15, 23, 42, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.role-row-modal[hidden] {
+  display: none;
+}
+
+.role-row-modal-card {
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.28);
+  border: 1px solid #cbd5e1;
+  padding: 14px;
+}
+
+.role-row-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  margin-bottom: 12px;
+}
+
+.role-row-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.role-row-field label {
+  font-size: 12px;
+  font-weight: 800;
+  color: #334155;
+}
+
+.role-row-field input,
+.role-row-field select {
+  height: 32px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 0 8px;
+  font-size: 13px;
+  background: #ffffff;
+}
+
+.role-row-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+
+.role-row-help {
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+.role-row-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* === PLANNER DEMAND ROLE PACKAGE END === */

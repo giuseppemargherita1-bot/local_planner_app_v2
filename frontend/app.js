@@ -1,4 +1,4 @@
-﻿const root = document.documentElement;
+const root = document.documentElement;
 const verticalSplitter = document.getElementById("verticalSplitter");
 const horizontalSplitter = document.getElementById("horizontalSplitter");
 const sideInnerSplitter = document.getElementById("sideInnerSplitter");
@@ -830,10 +830,168 @@ function getFirstUsefulPeriodForRow(projectId, role) {
   return 9999;
 }
 
+// === OLD WORKFLOW PLANNER HELPERS START ===
+const OLD_WORKFLOW_ROLE_ORDER = [
+  "CAPO CANTIERE",
+  "QUALITY CONTROL / WELDING INSPECTOR",
+  "ASPP",
+  "CAPO SQUADRA",
+  "TUBISTA",
+  "CARPENTIERE",
+  "SOLLEVAMENTI",
+  "AUTISTA",
+  "SALDATORE TIG-ELETTRODO",
+  "SALDATORE FILO",
+  "PWHT",
+  "GENERICO",
+  "MAGAZZINIERE",
+  "MECCANICO",
+  "MECCANICO SERVICE",
+  "MONTATORE",
+  "MANDRINATORE",
+  "ELETTRICISTA",
+  "PONTEGGIATORE",
+  "COIBENTATORE",
+  "VERNICIATORE",
+];
+
+function oldWorkflowProjectSortKey(projectName) {
+  const text = String(projectName || "").trim().toUpperCase();
+
+  if (text.includes("OVERALL OFFICINA")) {
+    return "999999_OVERALL_OFFICINA";
+  }
+
+  const match = text.match(/^([0-9]+)[_-]?([0-9]+)?/);
+  if (!match) {
+    return text;
+  }
+
+  const main = String(match[1] || "").padStart(6, "0");
+  const sub = String(match[2] || "").padStart(6, "0");
+
+  return `${main}_${sub}_${text}`;
+}
+
+function oldWorkflowRoleSortKey(role) {
+  const normalized = normalizeRole(role);
+  const index = OLD_WORKFLOW_ROLE_ORDER.indexOf(normalized);
+
+  if (index >= 0) {
+    return `${String(index).padStart(4, "0")}_${normalized}`;
+  }
+
+  return `9999_${normalized}`;
+}
+
+function oldWorkflowComparePlannerRows(a, b) {
+  const projectCompare = oldWorkflowProjectSortKey(a.project_name).localeCompare(
+    oldWorkflowProjectSortKey(b.project_name),
+    "it",
+    { numeric: true, sensitivity: "base" }
+  );
+
+  if (projectCompare !== 0) {
+    return projectCompare;
+  }
+
+  const roleCompare = oldWorkflowRoleSortKey(a.role).localeCompare(
+    oldWorkflowRoleSortKey(b.role),
+    "it",
+    { numeric: true, sensitivity: "base" }
+  );
+
+  if (roleCompare !== 0) {
+    return roleCompare;
+  }
+
+  return normalizeRole(a.role).localeCompare(normalizeRole(b.role), "it", {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
+function oldWorkflowFindPlannerProjectFilter() {
+  return document.getElementById("plannerProjectFilter") ||
+    Array.from(document.querySelectorAll("select")).find((select) => {
+      const first = normalizeRole(select.options?.[0]?.textContent || "");
+      return first.includes("TUTTE LE COMMESSE");
+    }) ||
+    null;
+}
+
+function oldWorkflowFindPlannerRoleFilter() {
+  return document.getElementById("plannerRoleFilter") ||
+    Array.from(document.querySelectorAll("select")).find((select) => {
+      const first = normalizeRole(select.options?.[0]?.textContent || "");
+      return first.includes("TUTTE LE MANSIONI");
+    }) ||
+    null;
+}
+
+function oldWorkflowProjectFilterValue() {
+  const filter = oldWorkflowFindPlannerProjectFilter();
+  return filter ? String(filter.value || "") : "";
+}
+
+function oldWorkflowRoleFilterValue() {
+  const filter = oldWorkflowFindPlannerRoleFilter();
+  return filter ? normalizeRole(filter.value || "") : "";
+}
+
+function oldWorkflowRowHasAnyValue(row, demandMap, allocationMaps) {
+  for (const period of PERIODS) {
+    const key = `${Number(row.project_id)}__${normalizeRole(row.role)}__${Number(period.periodKey)}`;
+
+    if (Number(demandMap.get(key) || 0) > 0) {
+      return true;
+    }
+
+    if (Number(allocationMaps.totalMap.get(key) || 0) > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+// === OLD WORKFLOW PLANNER HELPERS END ===
+
 function buildPlannerRows(projects, demands) {
   const projectsById = new Map(projects.map((project) => [Number(project.id), project]));
   const rowsMap = new Map();
+  const demandMap = buildDemandMap(demands);
+  const mapsForVisibility = buildAllocationMaps(allocationsData, resourcesData);
 
+  const showZero = document.querySelector(".inline-check input")?.checked;
+  const projectFilter = oldWorkflowProjectFilterValue();
+  const roleFilter = oldWorkflowRoleFilterValue();
+
+  function addRow(project, role, source) {
+    if (!project || !role) {
+      return;
+    }
+
+    const projectId = Number(project.id);
+    const normalizedRole = normalizeRole(role);
+
+    if (!projectId || !normalizedRole) {
+      return;
+    }
+
+    const rowKey = `${projectId}__${normalizedRole}`;
+
+    if (!rowsMap.has(rowKey)) {
+      rowsMap.set(rowKey, {
+        row_key: rowKey,
+        project_id: projectId,
+        project_name: project.name,
+        role: normalizedRole,
+        source,
+      });
+    }
+  }
+
+  // Fonte 1: fabbisogni. Questa e' la struttura commessa -> mansioni -> settimane.
   for (const demand of demands) {
     const project = projectsById.get(Number(demand.project_id));
 
@@ -841,22 +999,10 @@ function buildPlannerRows(projects, demands) {
       continue;
     }
 
-    const role = normalizeRole(demand.role);
-    const rowKey = `${Number(demand.project_id)}__${role}`;
-
-    if (!rowsMap.has(rowKey)) {
-      rowsMap.set(rowKey, {
-        row_key: rowKey,
-        project_id: Number(demand.project_id),
-        project_name: project.name,
-        role,
-      });
-    }
+    addRow(project, demand.role, "demand");
   }
 
-  // Manteniamo la correzione APPELLA:
-  // aggiungiamo righe anche da allocazioni R0/A1,
-  // ma solo se la riga Ã¨ utile nella vista operativa.
+  // Fonte 2: allocazioni. Serve per non perdere R0/A1, surplus, APPELLA/ZACCHEO.
   for (const allocation of allocationsData) {
     const project = projectsById.get(Number(allocation.project_id));
 
@@ -876,44 +1022,32 @@ function buildPlannerRows(projects, demands) {
       continue;
     }
 
-    const role = normalizeRole(allocation.role || resource.role || "");
-
-    if (!role) {
-      continue;
-    }
-
-    const rowKey = `${Number(allocation.project_id)}__${role}`;
-
-    if (!rowsMap.has(rowKey)) {
-      rowsMap.set(rowKey, {
-        row_key: rowKey,
-        project_id: Number(allocation.project_id),
-        project_name: project.name,
-        role,
-      });
-    }
+    addRow(project, allocation.role || resource.role || "", "allocation");
   }
 
   let rows = Array.from(rowsMap.values());
 
   rows = rows.filter((row) => {
-    return shouldShowPlannerRow(row.project_id, row.role);
-  });
-
-  rows.sort((a, b) => {
-    const aFirst = getFirstUsefulPeriodForRow(a.project_id, a.role);
-    const bFirst = getFirstUsefulPeriodForRow(b.project_id, b.role);
-
-    if (aFirst !== bFirst) {
-      return aFirst - bFirst;
+    if (projectFilter && String(row.project_id) !== String(projectFilter)) {
+      return false;
     }
 
-    if (a.project_name !== b.project_name) {
-      return a.project_name.localeCompare(b.project_name);
+    if (roleFilter && normalizeRole(row.role) !== roleFilter) {
+      return false;
     }
 
-    return a.role.localeCompare(b.role);
+    if (showZero) {
+      return true;
+    }
+
+    if (!shouldShowPlannerRow(row.project_id, row.role)) {
+      return false;
+    }
+
+    return oldWorkflowRowHasAnyValue(row, demandMap, mapsForVisibility);
   });
+
+  rows.sort(oldWorkflowComparePlannerRows);
 
   rowMetaMap = new Map(rows.map((row, index) => [index, row]));
 
@@ -1964,7 +2098,7 @@ async function handleAvailableResourceDoubleClick(resourceId) {
 
     if (conflicts.length > 0) {
       showConflictDialog(
-        "Conflitto su piÃ¹ settimane",
+        "Conflitto su più settimane",
         "La risorsa Ã¨ giÃ  allocata in almeno una delle settimane selezionate.<br>Gestisci una settimana alla volta.",
         [{ label: "OK", primary: true, handler: async () => {} }],
       );
@@ -2227,7 +2361,7 @@ function buildCellCalloutHtml(projectName, role, periodKey, assignments, release
   }
 
   if (released.length) {
-    parts.push(`<div class="cell-callout-section">Non piÃ¹ conteggiati</div>`);
+    parts.push(`<div class="cell-callout-section">Non più conteggiati</div>`);
     released.forEach((item) => {
       const line = `${formatAssignmentLine(item, role, periodKey)} | ${item.reason || "storico"}`;
       parts.push(`<div class="cell-callout-line cell-callout-released">${escapeHtml(line)}</div>`);
@@ -2238,7 +2372,7 @@ function buildCellCalloutHtml(projectName, role, periodKey, assignments, release
     const latest = demandHistoryRows[0];
     parts.push(`<div class="cell-callout-section">Storico fabbisogno</div>`);
     parts.push(
-      `<div class="cell-callout-line">${escapeHtml(latest.old_quantity)} â†’ ${escapeHtml(latest.new_quantity)} | ${escapeHtml(latest.created_at || "")}</div>`
+      `<div class="cell-callout-line">${escapeHtml(latest.old_quantity)} → ${escapeHtml(latest.new_quantity)} | ${escapeHtml(latest.created_at || "")}</div>`
     );
   }
 
@@ -2438,7 +2572,7 @@ function renderPlanner() {
           ${hasExt ? `<span class="cell-ext-corner">!</span>` : ""}
           R${formatNumber(required)}<br>
           A${allocatedDisplay}<br>
-          D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">â†º</span>` : ""}
+          D${formatNumber(diff)}${hasHistory || hasAllocationHistory ? `<span class="history-marker">↺</span>` : ""}
         </td>
       `;
     }).join("");
@@ -3771,3 +3905,1148 @@ document.addEventListener("DOMContentLoaded", async () => {
 })();
 // === FRONTEND OVERALL DEMANDS FROM ROLLUP PATCH END ===
 
+// === PLANNER DEMAND ROLE PACKAGE START ===
+(function plannerDemandRolePackage() {
+  function qs(id) {
+    return document.getElementById(id);
+  }
+
+  function norm(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeEscape(value) {
+    if (typeof escapeHtml === "function") return escapeHtml(value);
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function getSelectedCellElements() {
+    return Array.from(document.querySelectorAll(
+      "[data-cell].selected, [data-cell].is-selected, .planner-cell.selected[data-cell], .planner-cell.is-selected[data-cell], .planner-cell-clickable.selected[data-cell], .planner-cell-clickable.is-selected[data-cell]"
+    ));
+  }
+
+  function parseCellFromElement(el) {
+    if (!el || !el.dataset || !el.dataset.cell) return null;
+    try {
+      return JSON.parse(decodeURIComponent(el.dataset.cell));
+    } catch (error) {
+      try {
+        return JSON.parse(el.dataset.cell);
+      } catch (innerError) {
+        return null;
+      }
+    }
+  }
+
+  function getSelectedCells() {
+    return getSelectedCellElements()
+      .map(parseCellFromElement)
+      .filter(Boolean);
+  }
+
+  function getSelectionContext() {
+    const cells = getSelectedCells();
+
+    if (cells.length) {
+      const first = cells[0];
+      const periods = cells
+        .map((cell) => Number(cell.period_key || 0))
+        .filter(Boolean)
+        .sort((a, b) => a - b);
+
+      return {
+        cells,
+        project_id: Number(first.project_id || 0),
+        project_name: first.project_name || "",
+        role: norm(first.role || ""),
+        week_from: periods.length ? periods[0] % 100 : Number(first.week || 0),
+        week_to: periods.length ? periods[periods.length - 1] % 100 : Number(first.week || 0),
+        required: Number(first.required || 0),
+      };
+    }
+
+    if (typeof getSelectionSummary === "function") {
+      try {
+        const summary = getSelectionSummary();
+        if (summary) {
+          return {
+            cells: [],
+            project_id: Number(summary.project_id || 0),
+            project_name: summary.project_name || "",
+            role: norm(summary.role || ""),
+            week_from: Number(summary.week_from || summary.week || 0),
+            week_to: Number(summary.week_to || summary.week_from || summary.week || 0),
+            required: Number(summary.required || 0),
+          };
+        }
+      } catch (error) {
+        console.error("getSelectionSummary error", error);
+      }
+    }
+
+    return null;
+  }
+
+  function findDemandInputs() {
+    const inputs = Array.from(document.querySelectorAll("input, select, textarea"));
+
+    function byIdOrName(words) {
+      return inputs.find((el) => {
+        const text = `${el.id || ""} ${el.name || ""} ${el.placeholder || ""}`.toUpperCase();
+        return words.every((word) => text.includes(word));
+      }) || null;
+    }
+
+    const quantity =
+      qs("demandQuantity") ||
+      qs("selectedDemandQuantity") ||
+      qs("requiredInput") ||
+      byIdOrName(["DEMAND"]) ||
+      byIdOrName(["RICHIESTO"]) ||
+      null;
+
+    const weekFrom =
+      qs("demandWeekFrom") ||
+      qs("weekFromInput") ||
+      qs("periodFromInput") ||
+      byIdOrName(["WEEK", "FROM"]) ||
+      byIdOrName(["DA"]) ||
+      null;
+
+    const weekTo =
+      qs("demandWeekTo") ||
+      qs("weekToInput") ||
+      qs("periodToInput") ||
+      byIdOrName(["WEEK", "TO"]) ||
+      byIdOrName(["A"]) ||
+      null;
+
+    return { quantity, weekFrom, weekTo };
+  }
+
+  function unlockWeekToAndMultiSelectionDisplay() {
+    const context = getSelectionContext();
+    const { quantity, weekFrom, weekTo } = findDemandInputs();
+
+    if (weekTo) {
+      weekTo.removeAttribute("disabled");
+      weekTo.removeAttribute("readonly");
+      weekTo.type = "number";
+      weekTo.min = "1";
+      weekTo.max = "52";
+      if (context?.week_to) weekTo.value = String(context.week_to);
+    }
+
+    if (weekFrom) {
+      weekFrom.removeAttribute("disabled");
+      weekFrom.removeAttribute("readonly");
+      weekFrom.type = "number";
+      weekFrom.min = "1";
+      weekFrom.max = "52";
+      if (context?.week_from) weekFrom.value = String(context.week_from);
+    }
+
+    if (quantity && context) {
+      quantity.removeAttribute("disabled");
+      quantity.removeAttribute("readonly");
+      quantity.type = "number";
+      quantity.step = "0.5";
+      quantity.min = "0";
+
+      // Regola corretta: in selezione multipla non mostrare la somma.
+      // Mostra il valore della prima cella solo come default modificabile.
+      if (context.cells.length > 1) {
+        quantity.value = String(Number(context.cells[0]?.required || 0));
+        quantity.title = "Selezione multipla: il valore inserito sarà applicato uguale a tutte le celle selezionate.";
+      }
+    }
+  }
+
+  async function saveDemandRangeFromPanel() {
+    const context = getSelectionContext();
+    const { quantity, weekFrom, weekTo } = findDemandInputs();
+
+    if (!context || !context.project_id || !context.role) {
+      alert("Seleziona prima una cella del planner.");
+      return false;
+    }
+
+    if (!quantity) {
+      alert("Campo Richiesto non trovato nel pannello.");
+      return false;
+    }
+
+    const qty = Number(quantity.value || 0);
+    const from = Number(weekFrom?.value || context.week_from || 0);
+    const to = Number(weekTo?.value || context.week_to || from || 0);
+
+    if (!from || !to) {
+      alert("Settimana DA/A non valida.");
+      return false;
+    }
+
+    const result = await fetchJson("/api/demands/upsert-range", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        project_id: context.project_id,
+        role: context.role,
+        quantity: qty,
+        week_from: from,
+        week_to: to,
+      }),
+    });
+
+    if (!result.ok) {
+      alert(result.error || "Errore salvataggio fabbisogno.");
+      return false;
+    }
+
+    if (typeof loadAll === "function") {
+      await loadAll();
+    }
+
+    return true;
+  }
+
+  function patchSaveDemandButton() {
+    const buttons = Array.from(document.querySelectorAll("button"));
+    const saveBtn = buttons.find((btn) => {
+      const text = norm(btn.textContent || "");
+      return text.includes("SALVA FABBISOGNO") || text === "SALVA" || text.includes("FABBISOGNO");
+    });
+
+    if (!saveBtn || saveBtn.dataset.v2DemandRangePatched === "1") return;
+
+    saveBtn.dataset.v2DemandRangePatched = "1";
+
+    saveBtn.addEventListener("click", async (event) => {
+      const context = getSelectionContext();
+      if (!context) return;
+
+      const inputs = findDemandInputs();
+
+      // Intercettiamo solo quando esistono campi fabbisogno.
+      if (!inputs.quantity) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      await saveDemandRangeFromPanel();
+    }, true);
+  }
+
+  async function loadRolesForSelect(select) {
+    let roles = [];
+
+    try {
+      roles = await fetchJson("/api/roles");
+    } catch (error) {
+      roles = [];
+    }
+
+    if (!Array.isArray(roles) || !roles.length) {
+      try {
+        const set = new Set();
+        if (Array.isArray(resourcesData)) resourcesData.forEach((r) => r.role && set.add(norm(r.role)));
+        if (Array.isArray(demandsData)) demandsData.forEach((d) => d.role && set.add(norm(d.role)));
+        roles = Array.from(set).sort();
+      } catch (error) {
+        roles = [];
+      }
+    }
+
+    select.innerHTML = roles
+      .filter(Boolean)
+      .map((role) => `<option value="${safeEscape(role)}">${safeEscape(role)}</option>`)
+      .join("");
+  }
+
+  function ensureRoleRowModal() {
+    let modal = qs("roleRowModal");
+    if (modal) return modal;
+
+    modal = document.createElement("div");
+    modal.id = "roleRowModal";
+    modal.className = "role-row-modal";
+    modal.hidden = true;
+    modal.innerHTML = `
+      <div class="role-row-modal-card">
+        <div class="role-row-modal-header">
+          <strong>Nuova riga mansione</strong>
+          <button type="button" id="roleRowCloseBtn" class="btn btn-light">Chiudi</button>
+        </div>
+
+        <div class="role-row-field">
+          <label>Commessa</label>
+          <input id="roleRowProject" type="text" disabled />
+        </div>
+
+        <div class="role-row-field">
+          <label>Mansione</label>
+          <select id="roleRowRole"></select>
+        </div>
+
+        <div class="role-row-grid">
+          <div class="role-row-field">
+            <label>Richiesto</label>
+            <input id="roleRowQuantity" type="number" min="0" step="0.5" value="0" />
+          </div>
+          <div class="role-row-field">
+            <label>Da W</label>
+            <input id="roleRowWeekFrom" type="number" min="1" max="52" />
+          </div>
+          <div class="role-row-field">
+            <label>A W</label>
+            <input id="roleRowWeekTo" type="number" min="1" max="52" />
+          </div>
+        </div>
+
+        <div class="role-row-help">
+          Crea/attiva la riga mansione e imposta lo stesso fabbisogno su tutte le settimane del range.
+        </div>
+
+        <div class="role-row-actions">
+          <button type="button" id="roleRowSaveBtn" class="btn btn-primary">Crea riga e salva fabbisogno</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    qs("roleRowCloseBtn").addEventListener("click", () => {
+      modal.hidden = true;
+    });
+
+    qs("roleRowSaveBtn").addEventListener("click", saveRoleRowModal);
+
+    return modal;
+  }
+
+  async function openRoleRowModal() {
+    const context = getSelectionContext();
+    if (!context || !context.project_id) {
+      alert("Seleziona prima una cella della commessa.");
+      return;
+    }
+
+    const modal = ensureRoleRowModal();
+    const roleSelect = qs("roleRowRole");
+
+    qs("roleRowProject").value = context.project_name || `ID ${context.project_id}`;
+    qs("roleRowQuantity").value = "0";
+    qs("roleRowWeekFrom").value = String(context.week_from || 1);
+    qs("roleRowWeekTo").value = String(context.week_to || context.week_from || 1);
+
+    await loadRolesForSelect(roleSelect);
+
+    if (context.role && Array.from(roleSelect.options).some((opt) => opt.value === context.role)) {
+      roleSelect.value = context.role;
+    }
+
+    modal.dataset.projectId = String(context.project_id);
+    modal.hidden = false;
+  }
+
+  async function saveRoleRowModal() {
+    const modal = qs("roleRowModal");
+    const projectId = Number(modal?.dataset.projectId || 0);
+    const role = norm(qs("roleRowRole")?.value || "");
+    const quantity = Number(qs("roleRowQuantity")?.value || 0);
+    const weekFrom = Number(qs("roleRowWeekFrom")?.value || 0);
+    const weekTo = Number(qs("roleRowWeekTo")?.value || weekFrom || 0);
+
+    if (!projectId || !role || !weekFrom || !weekTo) {
+      alert("Compila mansione, richiesto, settimana da/a.");
+      return;
+    }
+
+    if (quantity <= 0) {
+      alert("Per creare una nuova riga mansione, il campo Richiesto deve essere maggiore di 0.");
+      return;
+    }
+
+    const result = await fetchJson("/api/project-role-row", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        project_id: projectId,
+        role,
+        quantity,
+        week_from: weekFrom,
+        week_to: weekTo,
+      }),
+    });
+
+    if (!result.ok) {
+      alert(result.error || "Errore creazione riga mansione.");
+      return;
+    }
+
+    modal.hidden = true;
+
+    if (typeof loadAll === "function") {
+      await loadAll();
+    }
+  }
+
+  function ensureRoleRowButton() {
+    if (qs("openRoleRowModalBtn")) return;
+
+    const target =
+      document.querySelector(".side-panel") ||
+      document.querySelector(".right-panel") ||
+      document.querySelector("aside") ||
+      document.body;
+
+    const btn = document.createElement("button");
+    btn.id = "openRoleRowModalBtn";
+    btn.type = "button";
+    btn.className = "btn btn-light open-role-row-modal-btn";
+    btn.textContent = "+ Riga mansione";
+    btn.addEventListener("click", openRoleRowModal);
+
+    target.prepend(btn);
+  }
+
+  function bindPlannerDemandRolePackage() {
+    ensureRoleRowButton();
+    patchSaveDemandButton();
+    unlockWeekToAndMultiSelectionDisplay();
+  }
+
+  document.addEventListener("click", () => {
+    setTimeout(bindPlannerDemandRolePackage, 60);
+    setTimeout(unlockWeekToAndMultiSelectionDisplay, 120);
+  });
+
+  document.addEventListener("selectionchange", () => {
+    setTimeout(unlockWeekToAndMultiSelectionDisplay, 80);
+  });
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindPlannerDemandRolePackage);
+  } else {
+    bindPlannerDemandRolePackage();
+  }
+
+  setTimeout(bindPlannerDemandRolePackage, 500);
+  setTimeout(bindPlannerDemandRolePackage, 1500);
+})();
+// === PLANNER DEMAND ROLE PACKAGE END ===
+
+// === FIX ROLE ROW REFRESH SORT FILTERS START ===
+(function fixRoleRowRefreshSortFilters() {
+  function norm(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  function safeEscape(value) {
+    if (typeof escapeHtml === "function") return escapeHtml(value);
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  function getProjectCode(name) {
+    const text = String(name || "").trim();
+    const match = text.match(/^([0-9]+[_-]?[0-9]*)/);
+    return match ? match[1] : text;
+  }
+
+  function getRoleOrder(role) {
+    const order = [
+      "ASPP",
+      "CAPO CANTIERE",
+      "CAPO SQUADRA",
+      "QUALITY CONTROL / WELDING INSPECTOR",
+      "TUBISTA",
+      "SALDATORE TIG-ELETTRODO",
+      "SALDATORE FILO",
+      "CARPENTIERE",
+      "MONTATORE",
+      "MECCANICO",
+      "MECCANICO SERVICE",
+      "MANDRINATORE",
+      "ELETTRICISTA",
+      "COIBENTATORE",
+      "PONTEGGIATORE",
+      "SOLLEVAMENTI",
+      "PWHT",
+      "VERNICIATORE",
+      "MAGAZZINIERE",
+      "GENERICO",
+      "AUTISTA",
+    ];
+    const idx = order.indexOf(norm(role));
+    return idx >= 0 ? idx : 999;
+  }
+
+  function patchRowsSortInPlace() {
+    try {
+      if (!Array.isArray(window.plannerMatrixRows) && typeof plannerMatrixRows === "undefined") {
+        return;
+      }
+    } catch (error) {
+      return;
+    }
+
+    let rows;
+    try {
+      rows = Array.isArray(plannerMatrixRows) ? plannerMatrixRows : window.plannerMatrixRows;
+    } catch (error) {
+      rows = window.plannerMatrixRows;
+    }
+
+    if (!Array.isArray(rows)) return;
+
+    rows.sort((a, b) => {
+      const projectA = String(a.project_name || a.projectName || "");
+      const projectB = String(b.project_name || b.projectName || "");
+
+      const codeCmp = getProjectCode(projectA).localeCompare(getProjectCode(projectB), "it", {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (codeCmp !== 0) return codeCmp;
+
+      const projectCmp = projectA.localeCompare(projectB, "it", {
+        numeric: true,
+        sensitivity: "base",
+      });
+      if (projectCmp !== 0) return projectCmp;
+
+      const roleOrderCmp = getRoleOrder(a.role) - getRoleOrder(b.role);
+      if (roleOrderCmp !== 0) return roleOrderCmp;
+
+      return norm(a.role).localeCompare(norm(b.role), "it", {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  }
+
+  function getRowsFromDomOrData() {
+    const rows = [];
+
+    try {
+      if (Array.isArray(plannerMatrixRows)) {
+        plannerMatrixRows.forEach((row) => rows.push(row));
+      }
+    } catch (error) {}
+
+    try {
+      if (Array.isArray(window.plannerMatrixRows)) {
+        window.plannerMatrixRows.forEach((row) => rows.push(row));
+      }
+    } catch (error) {}
+
+    document.querySelectorAll("[data-cell]").forEach((el) => {
+      try {
+        const cell = JSON.parse(decodeURIComponent(el.dataset.cell));
+        if (cell?.project_id && cell?.project_name) {
+          rows.push({
+            project_id: cell.project_id,
+            project_name: cell.project_name,
+            role: cell.role,
+          });
+        }
+      } catch (error) {
+        try {
+          const cell = JSON.parse(el.dataset.cell);
+          if (cell?.project_id && cell?.project_name) {
+            rows.push({
+              project_id: cell.project_id,
+              project_name: cell.project_name,
+              role: cell.role,
+            });
+          }
+        } catch (innerError) {}
+      }
+    });
+
+    try {
+      if (Array.isArray(projectsData)) {
+        projectsData.forEach((project) => {
+          rows.push({
+            project_id: project.id,
+            project_name: project.name,
+            role: "",
+          });
+        });
+      }
+    } catch (error) {}
+
+    try {
+      if (Array.isArray(demandsData)) {
+        demandsData.forEach((demand) => {
+          const project = Array.isArray(projectsData)
+            ? projectsData.find((p) => Number(p.id) === Number(demand.project_id))
+            : null;
+          rows.push({
+            project_id: demand.project_id,
+            project_name: project?.name || "",
+            role: demand.role,
+          });
+        });
+      }
+    } catch (error) {}
+
+    return rows;
+  }
+
+  function findProjectFilter() {
+    const selects = Array.from(document.querySelectorAll("select"));
+    return selects.find((select) => {
+      const text = `${select.id || ""} ${select.name || ""} ${select.closest("label")?.textContent || ""}`.toUpperCase();
+      const firstOption = norm(select.options?.[0]?.textContent || "");
+      return (
+        text.includes("PROJECT") ||
+        text.includes("COMMESS") ||
+        firstOption.includes("TUTTE LE COMMESSE")
+      );
+    }) || null;
+  }
+
+  function findRoleFilter() {
+    const selects = Array.from(document.querySelectorAll("select"));
+    return selects.find((select) => {
+      const text = `${select.id || ""} ${select.name || ""} ${select.closest("label")?.textContent || ""}`.toUpperCase();
+      const firstOption = norm(select.options?.[0]?.textContent || "");
+      return (
+        text.includes("ROLE") ||
+        text.includes("MANSION") ||
+        firstOption.includes("TUTTE LE MANSIONI")
+      );
+    }) || null;
+  }
+
+  function preserveAndSetOptions(select, firstLabel, options, getValue, getLabel) {
+    if (!select) return;
+
+    const previous = select.value;
+
+    const seen = new Set();
+    const cleanOptions = [];
+
+    options.forEach((item) => {
+      const value = String(getValue(item) ?? "").trim();
+      const label = String(getLabel(item) ?? "").trim();
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      cleanOptions.push({ value, label });
+    });
+
+    cleanOptions.sort((a, b) => a.label.localeCompare(b.label, "it", {
+      numeric: true,
+      sensitivity: "base",
+    }));
+
+    select.innerHTML =
+      `<option value="">${safeEscape(firstLabel)}</option>` +
+      cleanOptions
+        .map((item) => `<option value="${safeEscape(item.value)}">${safeEscape(item.label)}</option>`)
+        .join("");
+
+    if (previous && Array.from(select.options).some((opt) => opt.value === previous)) {
+      select.value = previous;
+    }
+  }
+
+  function populatePlannerFilters() {
+    const rows = getRowsFromDomOrData();
+
+    const projectMap = new Map();
+    const roleSet = new Set();
+
+    rows.forEach((row) => {
+      const projectId = Number(row.project_id || 0);
+      const projectName = String(row.project_name || "").trim();
+      const role = norm(row.role || "");
+
+      if (projectId && projectName) {
+        projectMap.set(String(projectId), {
+          id: String(projectId),
+          name: projectName,
+        });
+      }
+
+      if (role) roleSet.add(role);
+    });
+
+    const projectFilter = findProjectFilter();
+    const roleFilter = findRoleFilter();
+
+    preserveAndSetOptions(
+      projectFilter,
+      "Tutte le commesse",
+      Array.from(projectMap.values()),
+      (p) => p.id,
+      (p) => p.name
+    );
+
+    preserveAndSetOptions(
+      roleFilter,
+      "Tutte le mansioni",
+      Array.from(roleSet).map((role) => ({ role })),
+      (r) => r.role,
+      (r) => r.role
+    );
+  }
+
+  async function hardPlannerRefresh() {
+    if (typeof loadAll === "function") {
+      await loadAll();
+    }
+
+    patchRowsSortInPlace();
+
+    if (typeof renderPlanner === "function") {
+      renderPlanner();
+    }
+
+    setTimeout(() => {
+      patchRowsSortInPlace();
+      populatePlannerFilters();
+      if (typeof renderPlanner === "function") {
+        renderPlanner();
+      }
+    }, 80);
+
+    setTimeout(() => {
+      populatePlannerFilters();
+    }, 300);
+  }
+
+  function patchRenderPlannerSortAndFilters() {
+    if (typeof renderPlanner !== "function") return;
+    if (window.__renderPlannerSortFiltersPatched) return;
+
+    window.__renderPlannerSortFiltersPatched = true;
+
+    const originalRenderPlanner = renderPlanner;
+
+    renderPlanner = function patchedRenderPlannerSortFilters() {
+      patchRowsSortInPlace();
+      const result = originalRenderPlanner.apply(this, arguments);
+      setTimeout(populatePlannerFilters, 30);
+      return result;
+    };
+
+    try {
+      window.renderPlanner = renderPlanner;
+    } catch (error) {}
+  }
+
+  function patchSaveRoleRowModalRefresh() {
+    if (typeof window.saveRoleRowModal !== "function") {
+      return;
+    }
+
+    if (window.__saveRoleRowModalRefreshPatched) {
+      return;
+    }
+
+    window.__saveRoleRowModalRefreshPatched = true;
+
+    const originalSaveRoleRowModal = window.saveRoleRowModal;
+
+    window.saveRoleRowModal = async function patchedSaveRoleRowModalRefresh() {
+      const result = await originalSaveRoleRowModal.apply(this, arguments);
+      await hardPlannerRefresh();
+      return result;
+    };
+  }
+
+  function patchRoleRowSaveButtonFallback() {
+    const btn = document.getElementById("roleRowSaveBtn");
+    if (!btn || btn.dataset.refreshFallbackBound === "1") return;
+
+    btn.dataset.refreshFallbackBound = "1";
+
+    btn.addEventListener("click", () => {
+      setTimeout(hardPlannerRefresh, 300);
+      setTimeout(hardPlannerRefresh, 900);
+    });
+  }
+
+  function bindFixes() {
+    patchRenderPlannerSortAndFilters();
+    patchSaveRoleRowModalRefresh();
+    patchRoleRowSaveButtonFallback();
+    patchRowsSortInPlace();
+    populatePlannerFilters();
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", bindFixes);
+  } else {
+    bindFixes();
+  }
+
+  document.addEventListener("click", () => {
+    setTimeout(bindFixes, 80);
+  });
+
+  setTimeout(bindFixes, 500);
+  setTimeout(bindFixes, 1500);
+
+  window.refreshPlannerRowsAndFilters = hardPlannerRefresh;
+})();
+// === FIX ROLE ROW REFRESH SORT FILTERS END ===
+
+// === OLD WORKFLOW PLANNER PATCH START ===
+(function oldWorkflowPlannerPatch() {
+  function optionEscape(value) {
+    return escapeHtml(value);
+  }
+
+  function populatePlannerFiltersFromData() {
+    const projectFilter = oldWorkflowFindPlannerProjectFilter();
+    const roleFilter = oldWorkflowFindPlannerRoleFilter();
+
+    if (!projectFilter && !roleFilter) {
+      return;
+    }
+
+    const currentProject = projectFilter ? String(projectFilter.value || "") : "";
+    const currentRole = roleFilter ? normalizeRole(roleFilter.value || "") : "";
+
+    const projects = new Map();
+    const roles = new Set();
+
+    for (const demand of demandsData || []) {
+      const project = projectsData.find((item) => Number(item.id) === Number(demand.project_id));
+      if (!project) continue;
+
+      projects.set(String(project.id), project.name);
+
+      if (demand.role) {
+        roles.add(normalizeRole(demand.role));
+      }
+    }
+
+    for (const allocation of allocationsData || []) {
+      const project = projectsData.find((item) => Number(item.id) === Number(allocation.project_id));
+      if (!project) continue;
+
+      const resource = resourcesData.find((item) => Number(item.id) === Number(allocation.resource_id));
+
+      projects.set(String(project.id), project.name);
+
+      if (allocation.role || resource?.role) {
+        roles.add(normalizeRole(allocation.role || resource.role));
+      }
+    }
+
+    if (projectFilter) {
+      const orderedProjects = Array.from(projects.entries()).sort((a, b) => {
+        return oldWorkflowProjectSortKey(a[1]).localeCompare(oldWorkflowProjectSortKey(b[1]), "it", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+
+      projectFilter.innerHTML =
+        `<option value="">Tutte le commesse</option>` +
+        orderedProjects
+          .map(([id, name]) => `<option value="${optionEscape(id)}">${optionEscape(name)}</option>`)
+          .join("");
+
+      if (currentProject && Array.from(projectFilter.options).some((option) => option.value === currentProject)) {
+        projectFilter.value = currentProject;
+      }
+    }
+
+    if (roleFilter) {
+      const orderedRoles = Array.from(roles).sort((a, b) => {
+        return oldWorkflowRoleSortKey(a).localeCompare(oldWorkflowRoleSortKey(b), "it", {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+
+      roleFilter.innerHTML =
+        `<option value="">Tutte le mansioni</option>` +
+        orderedRoles
+          .map((role) => `<option value="${optionEscape(role)}">${optionEscape(role)}</option>`)
+          .join("");
+
+      if (currentRole && Array.from(roleFilter.options).some((option) => normalizeRole(option.value) === currentRole)) {
+        roleFilter.value = currentRole;
+      }
+    }
+  }
+
+  function bindPlannerFilterEvents() {
+    for (const filter of [oldWorkflowFindPlannerProjectFilter(), oldWorkflowFindPlannerRoleFilter()]) {
+      if (!filter || filter.dataset.oldWorkflowFilterBound === "1") {
+        continue;
+      }
+
+      filter.dataset.oldWorkflowFilterBound = "1";
+      filter.addEventListener("change", () => {
+        if (typeof renderPlanner === "function") {
+          renderPlanner();
+        }
+      });
+    }
+  }
+
+  async function refreshPlannerAfterRoleSave() {
+    if (typeof loadAll === "function") {
+      await loadAll();
+    }
+
+    if (typeof renderPlanner === "function") {
+      renderPlanner();
+    }
+
+    setTimeout(populatePlannerFiltersFromData, 50);
+    setTimeout(bindPlannerFilterEvents, 60);
+  }
+
+  function bindRoleRowSaveRefresh() {
+    const btn = document.getElementById("roleRowSaveBtn");
+
+    if (!btn || btn.dataset.oldWorkflowRoleSaveRefreshBound === "1") {
+      return;
+    }
+
+    btn.dataset.oldWorkflowRoleSaveRefreshBound = "1";
+
+    btn.addEventListener("click", () => {
+      setTimeout(refreshPlannerAfterRoleSave, 350);
+      setTimeout(refreshPlannerAfterRoleSave, 1000);
+    });
+  }
+
+  if (typeof renderPlanner === "function" && !window.__oldWorkflowRenderPlannerPatch) {
+    window.__oldWorkflowRenderPlannerPatch = true;
+
+    const originalRenderPlanner = renderPlanner;
+
+    renderPlanner = function patchedRenderPlannerOldWorkflow() {
+      const result = originalRenderPlanner.apply(this, arguments);
+
+      setTimeout(populatePlannerFiltersFromData, 30);
+      setTimeout(bindPlannerFilterEvents, 40);
+      setTimeout(bindRoleRowSaveRefresh, 50);
+
+      return result;
+    };
+
+    try {
+      window.renderPlanner = renderPlanner;
+    } catch (error) {}
+  }
+
+  window.oldWorkflowRefreshPlanner = refreshPlannerAfterRoleSave;
+
+  setTimeout(populatePlannerFiltersFromData, 500);
+  setTimeout(bindPlannerFilterEvents, 550);
+  setTimeout(bindRoleRowSaveRefresh, 600);
+})();
+// === OLD WORKFLOW PLANNER PATCH END ===
+
+// === ROLE ROW AUTO REFRESH AFTER SAVE START ===
+(function roleRowAutoRefreshAfterSave() {
+  if (window.__roleRowAutoRefreshAfterSaveInstalled) {
+    return;
+  }
+
+  window.__roleRowAutoRefreshAfterSaveInstalled = true;
+
+  const originalFetch = window.fetch.bind(window);
+
+  async function refreshPlannerAfterRoleRowSave() {
+    try {
+      if (typeof loadAll === "function") {
+        await loadAll();
+      }
+
+      if (typeof renderPlanner === "function") {
+        renderPlanner();
+      }
+
+      if (typeof populatePlannerFiltersFromData === "function") {
+        populatePlannerFiltersFromData();
+      }
+
+      if (typeof oldWorkflowRefreshPlanner === "function") {
+        // ulteriore sicurezza: usa il refresh installato dallo step 1
+        setTimeout(oldWorkflowRefreshPlanner, 150);
+      }
+    } catch (error) {
+      console.error("Errore refresh dopo nuova riga mansione", error);
+    }
+  }
+
+  window.fetch = async function patchedFetch(input, init) {
+    const url = typeof input === "string" ? input : String(input?.url || "");
+    const method = String(init?.method || input?.method || "GET").toUpperCase();
+
+    const isProjectRoleRowSave =
+      method === "POST" &&
+      url.includes("/api/project-role-row");
+
+    const response = await originalFetch(input, init);
+
+    if (isProjectRoleRowSave && response.ok) {
+      // Il backend ha salvato. Ora ricarico i dati e ridisegno il planner.
+      setTimeout(refreshPlannerAfterRoleRowSave, 150);
+      setTimeout(refreshPlannerAfterRoleRowSave, 700);
+      setTimeout(refreshPlannerAfterRoleRowSave, 1500);
+    }
+
+    return response;
+  };
+})();
+// === ROLE ROW AUTO REFRESH AFTER SAVE END ===
+
+// === ROLE ROW DIRECT SAVE AND REFRESH START ===
+(function roleRowDirectSaveAndRefresh() {
+  if (window.__roleRowDirectSaveAndRefreshInstalled) {
+    return;
+  }
+  window.__roleRowDirectSaveAndRefreshInstalled = true;
+
+  function n(value) {
+    return Number(value || 0);
+  }
+
+  function norm(value) {
+    if (typeof normalizeRole === "function") return normalizeRole(value);
+    return String(value || "").trim().toUpperCase();
+  }
+
+  async function reloadPlannerCoreDataDirect() {
+    const stamp = Date.now();
+
+    try {
+      resourcesData = await fetchJson(`/api/resources?_=${stamp}`);
+    } catch (error) {
+      console.warn("reload resources skipped", error);
+    }
+
+    try {
+      projectsData = await fetchJson(`/api/projects?_=${stamp}`);
+    } catch (error) {
+      console.warn("reload projects skipped", error);
+    }
+
+    try {
+      demandsData = await fetchJson(`/api/demands?_=${stamp}`);
+    } catch (error) {
+      console.warn("reload demands skipped", error);
+    }
+
+    try {
+      allocationsData = await fetchJson(`/api/allocations?_=${stamp}`);
+    } catch (error) {
+      console.warn("reload allocations skipped", error);
+    }
+
+    try {
+      allocationHistoryData = await fetchJson(`/api/allocation-history?_=${stamp}`);
+    } catch (error) {
+      // non bloccante
+    }
+
+    try {
+      demandHistoryData = await fetchJson(`/api/demand-history?_=${stamp}`);
+    } catch (error) {
+      // non bloccante
+    }
+
+    if (typeof renderPlanner === "function") {
+      renderPlanner();
+    }
+
+    if (typeof oldWorkflowRefreshPlanner === "function") {
+      setTimeout(oldWorkflowRefreshPlanner, 100);
+    }
+
+    if (typeof scrollToCurrentWeek === "function") {
+      setTimeout(scrollToCurrentWeek, 150);
+    }
+  }
+
+  async function saveRoleRowDirect(event) {
+    const btn = event.target?.closest?.("#roleRowSaveBtn");
+    if (!btn) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+
+    const modal = document.getElementById("roleRowModal");
+    const projectId = n(modal?.dataset.projectId);
+    const role = norm(document.getElementById("roleRowRole")?.value || "");
+    const quantity = n(document.getElementById("roleRowQuantity")?.value);
+    const weekFrom = n(document.getElementById("roleRowWeekFrom")?.value);
+    const weekTo = n(document.getElementById("roleRowWeekTo")?.value || weekFrom);
+
+    if (!projectId || !role || !weekFrom || !weekTo) {
+      alert("Compila mansione, richiesto, settimana da/a.");
+      return;
+    }
+
+    if (quantity <= 0) {
+      alert("Per creare una nuova riga mansione, il campo Richiesto deve essere maggiore di 0.");
+      return;
+    }
+
+    btn.disabled = true;
+    const oldText = btn.textContent;
+    btn.textContent = "Salvataggio...";
+
+    try {
+      const result = await fetchJson("/api/project-role-row", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          project_id: projectId,
+          role,
+          quantity,
+          week_from: weekFrom,
+          week_to: weekTo,
+        }),
+      });
+
+      if (!result.ok) {
+        alert(result.error || "Errore creazione riga mansione.");
+        return;
+      }
+
+      if (modal) {
+        modal.hidden = true;
+      }
+
+      await reloadPlannerCoreDataDirect();
+
+      // Sicurezza: un secondo render dopo che il DOM ha chiuso la modale.
+      setTimeout(reloadPlannerCoreDataDirect, 500);
+    } catch (error) {
+      console.error(error);
+      alert(error.message || "Errore salvataggio nuova riga mansione.");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldText;
+    }
+  }
+
+  document.addEventListener("click", saveRoleRowDirect, true);
+})();
+// === ROLE ROW DIRECT SAVE AND REFRESH END ===
