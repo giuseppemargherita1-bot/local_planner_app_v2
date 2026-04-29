@@ -3576,3 +3576,58 @@ body.operational-sheet-open #projectsSheetV2 * {
 }
 
 /* === FIX PROJECTS SHEET ABOVE OPERATIONAL SHIELD END === */
+
+/* === EDITABLE OVERALL ROLLUP INPUTS START === */
+
+.psv2-overall-child-cell {
+  padding: 0 !important;
+  min-width: 54px;
+  max-width: 68px;
+  height: 24px;
+  vertical-align: middle;
+}
+
+.psv2-overall-child-input {
+  width: 100%;
+  height: 100%;
+  min-height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: center;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f172a;
+  padding: 0 2px;
+  box-sizing: border-box;
+}
+
+.psv2-overall-child-input:hover {
+  background: #f8fafc;
+  box-shadow: inset 0 0 0 1px #cbd5e1;
+}
+
+.psv2-overall-child-input:focus {
+  outline: 2px solid #2563eb;
+  outline-offset: -2px;
+  background: #eff6ff;
+}
+
+.psv2-overall-child-input.dirty {
+  background: #fff7ed;
+  box-shadow: inset 0 0 0 1px #f97316;
+}
+
+.psv2-overall-child-input::-webkit-outer-spin-button,
+.psv2-overall-child-input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* Firefox */
+.psv2-overall-child-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* === EDITABLE OVERALL ROLLUP INPUTS END === */

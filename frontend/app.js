@@ -6941,6 +6941,65 @@ document.addEventListener("DOMContentLoaded", async () => {
       </tr>
     `;
   }
+  function collectOverallRollupRows() {
+    const rows = [];
+
+    document.querySelectorAll(".psv2-overall-child-input.dirty").forEach((input) => {
+      rows.push({
+        overall_project_id: Number(input.dataset.overallProjectId || 0),
+        source_old_project_id: Number(input.dataset.sourceOldProjectId || 0),
+        source_project_name: input.dataset.sourceProjectName || "",
+        role: input.dataset.role || "",
+        period_key: Number(input.dataset.periodKey || 0),
+        required: Number(input.value || 0),
+      });
+    });
+
+    return rows;
+  }
+
+  async function saveOverallRollupRows() {
+    const project = stateV2.matrix?.project || selectedProject();
+    const rows = collectOverallRollupRows();
+
+    if (!project || !Number(project.id)) {
+      alert("OVERALL non selezionato.");
+      return;
+    }
+
+    if (!rows.length) {
+      alert("Nessuna modifica rollup da salvare.");
+      return;
+    }
+
+    const result = await fetchJson("/api/projects-sheet/save-workshop-rollup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        overall_project_id: Number(project.id),
+        rows,
+      }),
+    });
+
+    if (!result.ok) {
+      alert(result.error || "Errore salvataggio rollup.");
+      return;
+    }
+
+    stateV2.dirty = false;
+
+    await loadMatrix(project.id);
+    renderAll();
+
+    if (typeof reloadPlannerDataAfterProjectSheet === "function") {
+      await reloadPlannerDataAfterProjectSheet();
+    } else if (typeof refreshV2Planner === "function") {
+      await refreshV2Planner();
+    }
+
+    alert(`Rollup salvato. Modificate: ${result.changed || 0}, nuove: ${result.inserted || 0}, eliminate: ${result.deleted || 0}, duplicati rimossi: ${result.deduped || 0}.`);
+  }
+
 
 
 
@@ -7150,7 +7209,23 @@ function findMatchingChildProject(childProjectName) {
           <td class="psv2-total-cell">${esc(fmt(childTotal))}</td>
           ${PERIODS.map((period) => {
             const value = Number(child.weeks.get(Number(period.periodKey)) || 0);
-            return `<td class="psv2-overall-child-cell">${value > 0 ? esc(fmt(value)) : ""}</td>`;
+            return `
+              <td class="psv2-overall-child-cell">
+                <input
+                  class="psv2-overall-child-input"
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value="${value > 0 ? esc(value) : ""}"
+                  data-overall-project-id="${Number(stateV2.matrix?.project?.id || 0)}"
+                  data-source-old-project-id="${Number(child.sourceOldProjectId || 0)}"
+                  data-source-project-name="${esc(child.projectName)}"
+                  data-role="${esc(roleBucket.role)}"
+                  data-period-key="${Number(period.periodKey)}"
+                  aria-label="${esc(child.projectName)} ${esc(roleBucket.role)} ${Number(period.periodKey)}"
+                />
+              </td>
+            `;
           }).join("")}
         </tr>
       `);
@@ -7158,6 +7233,51 @@ function findMatchingChildProject(childProjectName) {
   }
 
   body.innerHTML = html.join("");
+
+
+  body.querySelectorAll(".psv2-overall-child-input").forEach((input) => {
+    input.addEventListener("input", () => {
+      input.classList.add("dirty");
+      stateV2.dirty = true;
+
+      const role = input.dataset.role || "";
+      const periodKey = Number(input.dataset.periodKey || 0);
+      const periodIndex = PERIODS.findIndex((period) => Number(period.periodKey) === periodKey);
+
+      if (periodIndex < 0) return;
+
+      const roleRows = Array.from(body.querySelectorAll(".psv2-overall-role-row"));
+      const roleRow = roleRows.find((row) => {
+        const text = row.querySelector(".psv2-role-cell")?.textContent || "";
+        return text.includes(role);
+      });
+
+      if (!roleRow) return;
+
+      const safeRole = (window.CSS && CSS.escape) ? CSS.escape(role) : role.replace(/"/g, '\\"');
+      const childInputs = Array.from(
+        body.querySelectorAll(`.psv2-overall-child-input[data-role="${safeRole}"][data-period-key="${periodKey}"]`)
+      );
+
+      const total = childInputs.reduce((sum, item) => sum + Number(item.value || 0), 0);
+      const totalCell = roleRow.querySelectorAll(".psv2-overall-total-cell")[periodIndex];
+
+      if (totalCell) {
+        totalCell.textContent = total ? fmt(total) : "";
+      }
+
+      // ROLLUP_SIDE_TOTAL_LIVE_FIX
+      const childRow = input.closest(".psv2-overall-child-row");
+      if (childRow) {
+        const rowInputs = Array.from(childRow.querySelectorAll(".psv2-overall-child-input"));
+        const rowTotal = rowInputs.reduce((sum, item) => sum + Number(item.value || 0), 0);
+        const rowTotalCell = childRow.querySelector(".psv2-total-cell");
+        if (rowTotalCell) {
+          rowTotalCell.textContent = rowTotal ? fmt(rowTotal) : "";
+        }
+      }
+    });
+  });
 
   body.querySelectorAll("[data-open-child-id]").forEach((node) => {
     node.addEventListener("click", async (event) => {
@@ -7522,7 +7642,14 @@ function findMatchingChildProject(childProjectName) {
 
     if (saveDemandsBtn && saveDemandsBtn.dataset.bound !== "1") {
       saveDemandsBtn.dataset.bound = "1";
-      saveDemandsBtn.addEventListener("click", saveDemands);
+      saveDemandsBtn.addEventListener("click", () => {
+        if (stateV2.matrix?.is_overall) {
+          saveOverallRollupRows().catch((err) => alert(err.message || "Errore salvataggio rollup"));
+          return;
+        }
+
+        saveDemands();
+      });
     }
 
     if (refreshBtn && refreshBtn.dataset.bound !== "1") {

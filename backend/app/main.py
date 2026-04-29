@@ -2804,6 +2804,174 @@ def projects_sheet_save_demands(payload: dict):
         conn.close()
 
 
+@app.post("/api/projects-sheet/save-workshop-rollup")
+def projects_sheet_save_workshop_rollup(payload: dict):
+    overall_project_id = int(payload.get("overall_project_id") or 0)
+    rows = payload.get("rows") or []
+
+    if not overall_project_id:
+        return {"ok": False, "error": "overall_project_id obbligatorio"}
+
+    if not isinstance(rows, list):
+        return {"ok": False, "error": "rows non valido"}
+
+    conn = get_connection()
+    try:
+        _projects_sheet_ensure_schema(conn)
+
+        overall = conn.execute(
+            """
+            SELECT id, name, note
+            FROM projects
+            WHERE id = ?
+            """,
+            (overall_project_id,),
+        ).fetchone()
+
+        if not overall:
+            return {"ok": False, "error": "OVERALL non trovato"}
+
+        if not _projects_sheet_is_overall(overall):
+            return {"ok": False, "error": "La commessa selezionata non è un rollup OVERALL"}
+
+        changed = 0
+        inserted = 0
+        deleted = 0
+        skipped = 0
+        deduped = 0
+
+        for item in rows:
+            source_old_project_id = int(item.get("source_old_project_id") or 0)
+            source_project_name = str(item.get("source_project_name") or item.get("project_name") or "").strip()
+            role = _projects_sheet_norm(item.get("role") or "")
+            period_key = _projects_sheet_period_key(item.get("period_key") or item.get("week") or 0)
+            week = _projects_sheet_week_from_period(period_key)
+            required = float(item.get("required") or item.get("quantity") or 0)
+
+            if not source_project_name or not role or not period_key:
+                skipped += 1
+                continue
+
+            # Chiave stabile del rollup:
+            # overall + nome sorgente + mansione + periodo.
+            # source_old_project_id non viene usato come vincolo rigido perché può essere 0/non coerente.
+            matches = conn.execute(
+                """
+                SELECT rowid AS rid, required
+                FROM workshop_rollup_sources
+                WHERE overall_project_id = ?
+                  AND UPPER(source_project_name) = UPPER(?)
+                  AND UPPER(role) = ?
+                  AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
+                ORDER BY rowid
+                """,
+                (
+                    overall_project_id,
+                    source_project_name,
+                    role,
+                    period_key,
+                ),
+            ).fetchall()
+
+            existing = matches[0] if matches else None
+            duplicate_rows = matches[1:] if len(matches) > 1 else []
+
+            for duplicate in duplicate_rows:
+                conn.execute(
+                    """
+                    DELETE FROM workshop_rollup_sources
+                    WHERE rowid = ?
+                    """,
+                    (duplicate["rid"],),
+                )
+                deduped += 1
+
+            if existing:
+                old_required = float(existing["required"] or 0)
+
+                if old_required == required and not duplicate_rows:
+                    skipped += 1
+                    continue
+
+                if required <= 0:
+                    conn.execute(
+                        """
+                        DELETE FROM workshop_rollup_sources
+                        WHERE rowid = ?
+                        """,
+                        (existing["rid"],),
+                    )
+                    deleted += 1
+                else:
+                    conn.execute(
+                        """
+                        UPDATE workshop_rollup_sources
+                        SET required = ?,
+                            week = ?,
+                            period_key = ?,
+                            role = ?,
+                            source_project_name = ?,
+                            source_old_project_id = CASE
+                                WHEN ? > 0 THEN ?
+                                ELSE source_old_project_id
+                            END
+                        WHERE rowid = ?
+                        """,
+                        (
+                            required,
+                            week,
+                            period_key,
+                            role,
+                            source_project_name,
+                            source_old_project_id,
+                            source_old_project_id,
+                            existing["rid"],
+                        ),
+                    )
+                    changed += 1
+            else:
+                if required <= 0:
+                    skipped += 1
+                    continue
+
+                conn.execute(
+                    """
+                    INSERT INTO workshop_rollup_sources(
+                        overall_project_id,
+                        source_old_project_id,
+                        source_project_name,
+                        role,
+                        week,
+                        period_key,
+                        required
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        overall_project_id,
+                        source_old_project_id,
+                        source_project_name,
+                        role,
+                        week,
+                        period_key,
+                        required,
+                    ),
+                )
+                inserted += 1
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "changed": changed,
+            "inserted": inserted,
+            "deleted": deleted,
+            "skipped": skipped,
+            "deduped": deduped,
+        }
+    finally:
+        conn.close()
+
 @app.get("/api/projects-sheet/test-changes")
 def projects_sheet_test_changes():
     conn = get_connection()
