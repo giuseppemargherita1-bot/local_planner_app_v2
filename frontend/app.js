@@ -1445,6 +1445,9 @@ function selectSingleCell(cell) {
   selectedCells = [cell];
   applyCellSelectionVisuals();
   updateSidePanelFromSelection();
+  if (plannerGridWrap) {
+    plannerGridWrap.focus({ preventScroll: true });
+  }
   cell.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -1478,6 +1481,9 @@ function extendSelection(direction) {
 
   applyCellSelectionVisuals();
   updateSidePanelFromSelection();
+  if (plannerGridWrap) {
+    plannerGridWrap.focus({ preventScroll: true });
+  }
   targetCell.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
 
@@ -1500,8 +1506,27 @@ function moveSelection(deltaRow, deltaCol) {
     `td[data-row-index="${targetRow}"][data-period-key="${targetPeriodKey}"]`
   );
 
-  if (!target) return;
-  selectSingleCell(target);
+  if (target) {
+    selectSingleCell(target);
+    return;
+  }
+
+  if (deltaRow !== 0) {
+    const candidates = Array.from(
+      plannerBody.querySelectorAll(`td[data-period-key="${targetPeriodKey}"][data-cell]`)
+    )
+      .map((cell) => ({ cell, row: Number(cell.dataset.rowIndex) }))
+      .filter((entry) => Number.isFinite(entry.row))
+      .sort((a, b) => a.row - b.row);
+
+    const fallback = deltaRow > 0
+      ? candidates.find((entry) => entry.row > currentRow)
+      : [...candidates].reverse().find((entry) => entry.row < currentRow);
+
+    if (fallback?.cell) {
+      selectSingleCell(fallback.cell);
+    }
+  }
 }
 
 function moveFocusToDemandPanel() {
@@ -2276,9 +2301,11 @@ function handleGridKeydown(event) {
       else moveFocusToDemandPanel();
       break;
     case "Tab":
-      event.preventDefault();
-      if (activeMode === "demand") setMode("resources");
-      else setMode("demand");
+      if (!event.shiftKey) {
+        event.preventDefault();
+        if (activeMode === "resources") moveFocusToResourcesPanel();
+        else moveFocusToDemandPanel();
+      }
       break;
     case "Delete":
     case "Backspace":
@@ -6915,143 +6942,241 @@ document.addEventListener("DOMContentLoaded", async () => {
     `;
   }
 
-  function renderOverallMatrix() {
-    const body = document.getElementById("psv2MatrixBody");
-    const info = document.getElementById("psv2Info");
-    const rolebar = document.getElementById("psv2Rolebar");
-    if (!body) return;
 
-    if (rolebar) rolebar.hidden = true;
 
-    const rows = stateV2.matrix?.workshop_rows || [];
-    const byRole = new Map();
 
-    for (const row of rows) {
-      const role = norm(row.role || "");
-      const projectName = String(row.project_name || row.source_project_name || "").trim();
-      const periodKey = Number(row.period_key || 0);
-      const required = Number(row.required || 0);
+function renderOverallMatrix() {
+  const body = document.getElementById("psv2MatrixBody");
+  const info = document.getElementById("psv2Info");
+  const rolebar = document.getElementById("psv2Rolebar");
+  if (!body) return;
 
-      if (!role || !projectName || !periodKey || required <= 0) continue;
+  if (rolebar) rolebar.hidden = true;
 
-      if (!byRole.has(role)) {
-        byRole.set(role, {
-          role,
-          totals: new Map(),
-          children: new Map(),
-        });
-      }
+  const rows = stateV2.matrix?.workshop_rows || [];
+  const byRole = new Map();
 
-      const roleBucket = byRole.get(role);
-      roleBucket.totals.set(periodKey, Number(roleBucket.totals.get(periodKey) || 0) + required);
+  function normalizeProjectMatchName(value) {
+    return norm(value)
+      .replace(/\s*\((SITE|OFFICINA|CANTIERE SERVICE)\)\s*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
 
-      if (!roleBucket.children.has(projectName)) {
-        roleBucket.children.set(projectName, {
-          projectName,
-          weeks: new Map(),
-        });
-      }
+function projectMatchTokens(value) {
+  const raw = String(value || "");
+  const text = normalizeProjectMatchName(raw);
+  const upperRaw = norm(raw);
 
-      const child = roleBucket.children.get(projectName);
-      child.weeks.set(periodKey, Number(child.weeks.get(periodKey) || 0) + required);
+  const code = (upperRaw.match(/^([0-9]+(?:[_-][0-9]+)?)/) || [])[1] || "";
+
+  let area = "";
+  if (upperRaw.includes("OFFICINA")) area = "OFFICINA";
+  else if (upperRaw.includes("SITE")) area = "SITE";
+  else if (upperRaw.includes("CANTIERE")) area = "SITE";
+  else if (upperRaw.includes("SERVICE")) area = "SERVICE";
+
+  return {
+    raw: upperRaw,
+    text,
+    code: code.replace("-", "_"),
+    area,
+  };
+}
+function findMatchingChildProject(childProjectName) {
+  const childRaw = norm(childProjectName || "");
+  const childCode = (childRaw.match(/^([0-9]+(?:[_-][0-9]+)?)/) || [])[1]?.replace("-", "_") || "";
+
+  const childIsOfficina = childRaw.includes("OFFICINA");
+  const childIsSite = childRaw.includes("SITE") || childRaw.includes("CANTIERE");
+  const childIsService = childRaw.includes("SERVICE");
+
+  const projects = stateV2.projects || [];
+
+  function projectCode(projectName) {
+    const raw = norm(projectName || "");
+    return (raw.match(/^([0-9]+(?:[_-][0-9]+)?)/) || [])[1]?.replace("-", "_") || "";
+  }
+
+  function projectArea(projectName) {
+    const raw = norm(projectName || "");
+    if (raw.includes("OFFICINA")) return "OFFICINA";
+    if (raw.includes("SITE") || raw.includes("CANTIERE")) return "SITE";
+    if (raw.includes("SERVICE")) return "SERVICE";
+    return "";
+  }
+
+  let requiredArea = "";
+  if (childIsOfficina) requiredArea = "OFFICINA";
+  else if (childIsSite) requiredArea = "SITE";
+  else if (childIsService) requiredArea = "SERVICE";
+
+  if (!childCode) return null;
+
+  const sameCode = projects.filter((project) => {
+    return projectCode(project.name || "") === childCode;
+  });
+
+  // Se il rollup specifica OFFICINA/SITE/SERVICE, apri solo una commessa
+  // con stessa area. Non collegare mai OFFICINA a SITE solo per codice uguale.
+  if (requiredArea) {
+    const sameArea = sameCode.filter((project) => {
+      return projectArea(project.name || "") === requiredArea;
+    });
+
+    if (sameArea.length === 1) {
+      return sameArea[0];
     }
 
-    const roleRows = Array.from(byRole.values()).sort((a, b) => {
-      return roleSortKeyV2(a.role).localeCompare(roleSortKeyV2(b.role), "it", {
+    return null;
+  }
+
+  if (sameCode.length === 1) {
+    return sameCode[0];
+  }
+
+  return null;
+}
+
+  for (const row of rows) {
+    const role = norm(row.role || "");
+    const projectName = String(row.project_name || row.source_project_name || "").trim();
+    const periodKey = Number(row.period_key || 0);
+    const required = Number(row.required || 0);
+
+    if (!role || !projectName || !periodKey || required <= 0) continue;
+
+    if (!byRole.has(role)) {
+      byRole.set(role, {
+        role,
+        totals: new Map(),
+        children: new Map(),
+      });
+    }
+
+    const roleBucket = byRole.get(role);
+    roleBucket.totals.set(periodKey, Number(roleBucket.totals.get(periodKey) || 0) + required);
+
+    const childKey = normalizeProjectMatchName(projectName) || norm(projectName);
+
+    if (!roleBucket.children.has(childKey)) {
+      roleBucket.children.set(childKey, {
+        projectName,
+        weeks: new Map(),
+      });
+    }
+
+    const child = roleBucket.children.get(childKey);
+    child.weeks.set(periodKey, Number(child.weeks.get(periodKey) || 0) + required);
+  }
+
+  const roleRows = Array.from(byRole.values()).sort((a, b) => {
+    return roleSortKeyV2(a.role).localeCompare(roleSortKeyV2(b.role), "it", {
+      numeric: true,
+      sensitivity: "base",
+    });
+  });
+
+  const childNames = new Set();
+  roleRows.forEach((roleBucket) => {
+    roleBucket.children.forEach((child) => childNames.add(child.projectName));
+  });
+
+  if (info) {
+    info.innerHTML = `
+      <strong>${esc(stateV2.matrix?.project?.name || "OVERALL OFFICINA")}</strong>
+      <span>Vista rollup: apri una sottocommessa per modificarla</span>
+      <span>Sottocommesse: ${childNames.size}</span>
+      <span>Fonte: workshop_rollup_sources</span>
+    `;
+  }
+
+  if (!roleRows.length) {
+    body.innerHTML = `
+      <tr>
+        <td class="psv2-empty" colspan="${PERIODS.length + 2}">
+          Nessun dato trovato nel rollup officina.
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  const html = [];
+
+  for (const roleBucket of roleRows) {
+    const roleTotal = PERIODS.reduce((sum, period) => {
+      return sum + Number(roleBucket.totals.get(Number(period.periodKey)) || 0);
+    }, 0);
+
+    html.push(`
+      <tr class="psv2-overall-role-row">
+        <td class="psv2-role-cell"><strong>OVERALL - ${esc(roleBucket.role)}</strong></td>
+        <td class="psv2-total-cell">${esc(fmt(roleTotal))}</td>
+        ${PERIODS.map((period) => {
+          const value = Number(roleBucket.totals.get(Number(period.periodKey)) || 0);
+          return `<td class="psv2-overall-total-cell">${value > 0 ? esc(fmt(value)) : ""}</td>`;
+        }).join("")}
+      </tr>
+    `);
+
+    const children = Array.from(roleBucket.children.values()).sort((a, b) => {
+      return projectSortKeyV2(a.projectName).localeCompare(projectSortKeyV2(b.projectName), "it", {
         numeric: true,
         sensitivity: "base",
       });
     });
 
-    const childNames = new Set();
-    roleRows.forEach((roleBucket) => {
-      roleBucket.children.forEach((child) => childNames.add(child.projectName));
-    });
-
-    if (info) {
-      info.innerHTML = `
-        <strong>${esc(stateV2.matrix?.project?.name || "OVERALL OFFICINA")}</strong>
-        <span>Vista rollup non editabile</span>
-        <span>Sottocommesse: ${childNames.size}</span>
-        <span>Fonte: workshop_rollup_sources</span>
-      `;
-    }
-
-    if (!roleRows.length) {
-      body.innerHTML = `
-        <tr>
-          <td class="psv2-empty" colspan="${PERIODS.length + 2}">
-            Nessun dato trovato nel rollup officina.
-          </td>
-        </tr>
-      `;
-      return;
-    }
-
-    const html = [];
-
-    for (const roleBucket of roleRows) {
-      const roleTotal = PERIODS.reduce((sum, period) => {
-        return sum + Number(roleBucket.totals.get(Number(period.periodKey)) || 0);
+    for (const child of children) {
+      const childTotal = PERIODS.reduce((sum, period) => {
+        return sum + Number(child.weeks.get(Number(period.periodKey)) || 0);
       }, 0);
 
+      const matchingProject = findMatchingChildProject(child.projectName);
+
       html.push(`
-        <tr class="psv2-overall-role-row">
-          <td class="psv2-role-cell"><strong>OVERALL - ${esc(roleBucket.role)}</strong></td>
-          <td class="psv2-total-cell">${esc(fmt(roleTotal))}</td>
+        <tr
+          class="psv2-overall-child-row"
+          ${matchingProject ? `data-open-child-id="${Number(matchingProject.id)}"` : ""}
+        >
+          <td class="psv2-role-cell psv2-child-project">
+            ${
+              matchingProject
+                ? `<button class="psv2-open-child" type="button" data-open-child-id="${Number(matchingProject.id)}">Apri</button>`
+                : `<span class="psv2-child-missing" title="Riga rollup officina. Modifica diretta da implementare sul rollup, senza creare commesse figlie.">Rollup</span>`
+            }
+            ${esc(child.projectName)}
+          </td>
+          <td class="psv2-total-cell">${esc(fmt(childTotal))}</td>
           ${PERIODS.map((period) => {
-            const value = Number(roleBucket.totals.get(Number(period.periodKey)) || 0);
-            return `<td class="psv2-overall-total-cell">${value > 0 ? esc(fmt(value)) : ""}</td>`;
+            const value = Number(child.weeks.get(Number(period.periodKey)) || 0);
+            return `<td class="psv2-overall-child-cell">${value > 0 ? esc(fmt(value)) : ""}</td>`;
           }).join("")}
         </tr>
       `);
-
-      const children = Array.from(roleBucket.children.values()).sort((a, b) => {
-        return projectSortKeyV2(a.projectName).localeCompare(projectSortKeyV2(b.projectName), "it", {
-          numeric: true,
-          sensitivity: "base",
-        });
-      });
-
-      for (const child of children) {
-        const childTotal = PERIODS.reduce((sum, period) => {
-          return sum + Number(child.weeks.get(Number(period.periodKey)) || 0);
-        }, 0);
-
-        const matchingProject = (stateV2.projects || []).find((project) => {
-          return norm(project.name) === norm(child.projectName);
-        });
-
-        html.push(`
-          <tr class="psv2-overall-child-row" ${matchingProject ? `data-open-child-id="${Number(matchingProject.id)}"` : ""}>
-            <td class="psv2-role-cell psv2-child-project">
-              ${matchingProject ? `<button class="psv2-open-child" type="button" data-open-child-id="${Number(matchingProject.id)}">Apri</button>` : ""}
-              ${esc(child.projectName)}
-            </td>
-            <td class="psv2-total-cell">${esc(fmt(childTotal))}</td>
-            ${PERIODS.map((period) => {
-              const value = Number(child.weeks.get(Number(period.periodKey)) || 0);
-              return `<td class="psv2-overall-child-cell">${value > 0 ? esc(fmt(value)) : ""}</td>`;
-            }).join("")}
-          </tr>
-        `);
-      }
     }
-
-    body.innerHTML = html.join("");
-
-    body.querySelectorAll("[data-open-child-id]").forEach((node) => {
-      node.addEventListener("click", async (event) => {
-        event.stopPropagation();
-        const id = Number(event.currentTarget.dataset.openChildId || 0);
-        if (!id) return;
-
-        stateV2.selectedProjectId = String(id);
-        await loadMatrix(id);
-        renderAll();
-      });
-    });
   }
+
+  body.innerHTML = html.join("");
+
+  body.querySelectorAll("[data-open-child-id]").forEach((node) => {
+    node.addEventListener("click", async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const id = Number(event.currentTarget.dataset.openChildId || 0);
+      if (!id) return;
+
+      if (stateV2.dirty && !confirm("Hai modifiche non salvate. Aprire la sottocommessa?")) {
+        return;
+      }
+
+      stateV2.selectedProjectId = String(id);
+      await loadMatrix(id);
+      renderAll();
+    });
+  });
+}
 
   function renderInputMatrix() {
     const body = document.getElementById("psv2MatrixBody");
@@ -7491,14 +7616,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     },
   };
 
+  let deletedResourceIds = new Set();
+  let resourceOriginalSnapshot = new Map();
+  let resourceColumnDrag = null;
+
   const RESOURCE_COLUMNS = [
     { key: "id", label: "ID", readonly: true },
     { key: "code", label: "Codice", readonly: true },
     { key: "name", label: "Risorsa" },
     { key: "role", label: "Mansione 1" },
-    { key: "role2", label: "Mansione 2", readonly: true },
-    { key: "hire_date", label: "Assunzione", readonly: true },
-    { key: "end_date", label: "Fine", readonly: true },
+    { key: "role2", label: "Mansione 2" },
+    { key: "hire_date", label: "Assunzione" },
+    { key: "end_date", label: "Fine" },
     { key: "birth_date", label: "Data nascita", readonly: true },
     { key: "phone", label: "Telefono", readonly: true },
     { key: "city", label: "Comune res.", readonly: true },
@@ -7525,7 +7654,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     { key: "action", label: "Azione", readonly: true },
   ];
 
-  const DEFAULT_RESOURCE_VISIBLE_COLUMNS = [0, 1, 2, 3, 6, 10, 20, 22, 24, 28, 29, 30];
+  const DEFAULT_RESOURCE_VISIBLE_COLUMNS = [0, 1, 2, 3, 4, 5, 6, 10, 20, 22, 24, 28, 29, 30];
+  const REQUIRED_RESOURCE_VISIBLE_COLUMNS = [2, 3, 4, 5, 6, 28, 29, 30];
+  const DEFAULT_RESOURCE_COLUMN_WIDTHS = [
+    48, 90, 220, 130, 130, 110, 110, 110, 130, 130,
+    130, 120, 90, 95, 105, 105, 95, 90, 90, 100,
+    110, 140, 110, 170, 120, 95, 160, 90, 180, 100,
+    110,
+  ];
   state.resourcesSheet.visibleColumns = loadVisibleResourceColumns();
 
   function norm(value) {
@@ -7595,18 +7731,198 @@ document.addEventListener("DOMContentLoaded", async () => {
     return resourceById(resourceId)?.name || `Risorsa ${resourceId}`;
   }
 
+  function splitResourceNoteParts(note) {
+    return String(note || "")
+      .split("|")
+      .map((part) => String(part || "").trim())
+      .filter(Boolean);
+  }
+
+  function parseResourceNote(note = "") {
+    const parts = splitResourceNoteParts(note);
+    const meta = {};
+    const preservedMetaParts = [];
+    const noteParts = [];
+    let hire = "";
+    let end = "";
+    let role2 = "";
+
+    for (const part of parts) {
+      const keyMatch = part.match(/^([A-Z0-9_]+)\s*=\s*(.*)$/i);
+      if (keyMatch) {
+        const keyRaw = String(keyMatch[1] || "").trim();
+        const key = norm(keyRaw);
+        const value = String(keyMatch[2] || "").trim();
+        if (key === "HIRE") {
+          hire = value;
+          continue;
+        }
+        if (key === "END") {
+          end = value;
+          continue;
+        }
+        if (key === "ROLE2") {
+          role2 = value;
+          continue;
+        }
+        meta[key] = value;
+        preservedMetaParts.push(`${keyRaw}=${value}`);
+        continue;
+      }
+
+      const upper = norm(part);
+      if (upper.startsWith("IMPORT_") || upper.startsWith("MATRIX_") || upper.startsWith("RAW_OLD")) {
+        preservedMetaParts.push(part);
+        continue;
+      }
+
+      noteParts.push(part);
+    }
+
+    return {
+      hire,
+      end,
+      role2,
+      note: noteParts.join(" | "),
+      noteParts,
+      meta,
+      preservedMetaParts,
+      rawParts: parts,
+    };
+  }
+
+  function buildResourceNote({ hire = "", end = "", role2 = "", note = "", originalNote = "" } = {}) {
+    const parsedOriginal = parseResourceNote(originalNote);
+    const merged = [...parsedOriginal.preservedMetaParts];
+    const existing = new Set(merged.map((part) => norm(part)));
+
+    function pushPart(part) {
+      const text = String(part || "").trim();
+      if (!text) return;
+      const signature = norm(text);
+      if (existing.has(signature)) return;
+      merged.push(text);
+      existing.add(signature);
+    }
+
+    const hireValue = String(hire || "").trim();
+    const endValue = String(end || "").trim();
+    const role2Value = String(role2 || "").trim();
+    if (hireValue) pushPart(`HIRE=${hireValue}`);
+    if (endValue) pushPart(`END=${endValue}`);
+    if (role2Value) pushPart(`ROLE2=${role2Value}`);
+
+    for (const part of splitResourceNoteParts(note)) {
+      const keyMatch = part.match(/^([A-Z0-9_]+)\s*=\s*(.*)$/i);
+      if (keyMatch) {
+        const key = norm(keyMatch[1] || "");
+        if (key === "HIRE" || key === "END" || key === "ROLE2") continue;
+      }
+      pushPart(part);
+    }
+
+    return merged.join(" | ");
+  }
+
+  function cleanOperationalNoteText(resource) {
+    return parseResourceNote(resource?.availability_note || "").note;
+  }
+
+  function resourceRole2Value(resource) {
+    const parsed = parseResourceNote(resource?.availability_note || "");
+    return String(resource?.role2 || parsed.role2 || "");
+  }
+
+  function resourceHireValue(resource) {
+    const parsed = parseResourceNote(resource?.availability_note || "");
+    return String(resource?.hire_date || parsed.hire || "");
+  }
+
+  function resourceEndValue(resource) {
+    const parsed = parseResourceNote(resource?.availability_note || "");
+    return String(resource?.end_date || parsed.end || "");
+  }
+
+  function resourceEndDateValue(resource) {
+    const fromGlobal = typeof getResourceEndDate === "function" ? getResourceEndDate(resource) : null;
+    if (fromGlobal instanceof Date && !Number.isNaN(fromGlobal.getTime())) return fromGlobal;
+
+    const fromField = parseItalianDateFromText(resource?.end_date || "");
+    if (fromField instanceof Date && !Number.isNaN(fromField.getTime())) return fromField;
+
+    const fromMeta = parseItalianDateFromText(resourceEndValue(resource));
+    if (fromMeta instanceof Date && !Number.isNaN(fromMeta.getTime())) return fromMeta;
+
+    return null;
+  }
+
+  function resourceOperationalStatus(resource) {
+    const text = norm(resource?.availability_note || "");
+    const inactive = Number(resource?.is_active) !== 1;
+    const ended = resourceEndDateValue(resource);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const endedPast = !!ended && ended < today;
+    const noteUnavailable =
+      text.includes("INDISP") ||
+      text.includes("NON DISPONIBILE");
+    const noteOut =
+      text.includes("FUORI_CONTRATTO") ||
+      text.includes("FUORI CONTRATTO");
+    const noteCeased =
+      text.includes("CESSATO") ||
+      text.includes("LICENZIAT") ||
+      text.includes("DIMESS") ||
+      text.includes("TERMINAT");
+
+    if (noteOut || endedPast) {
+      return {
+        label: "FUORI CONTRATTO",
+        active: false,
+      };
+    }
+
+    if (inactive || noteCeased) {
+      return {
+        label: "CESSATO",
+        active: false,
+      };
+    }
+
+    if (noteUnavailable) {
+      return {
+        label: "INDISPONIBILE",
+        active: false,
+      };
+    }
+
+    return {
+      label: "ATTIVO",
+      active: true,
+    };
+  }
+
   function isExternalResourceLike(resource) {
     const text = norm(`${resource?.name || ""} ${resource?.role || ""} ${resource?.availability_note || ""}`);
     return text.includes("-EXT") || text.endsWith(" EXT") || text.includes(" ESTERNO");
   }
 
-  function isInactiveResource(resource) {
-    return Number(resource?.is_active) !== 1;
+  function isInactiveResource(resource, periodKey = CURRENT_PERIOD_KEY) {
+    if (Number(resource?.is_active) !== 1) return true;
+    if (typeof isResourceContractEndedForPeriod === "function") {
+      return isResourceContractEndedForPeriod(resource, periodKey);
+    }
+    return false;
   }
 
-  function isUnavailableResource(resource) {
+  function isUnavailableResource(resource, periodKey = CURRENT_PERIOD_KEY) {
     const text = norm(resource?.availability_note || "");
-    return text.includes("INDISP") || text.includes("NON DISPONIBILE");
+    if (text.includes("INDISP") || text.includes("NON DISPONIBILE")) return true;
+    if (typeof isResourceContractEndedForPeriod === "function") {
+      return isResourceContractEndedForPeriod(resource, periodKey);
+    }
+    return false;
   }
 
   function resourceRole(resource) {
@@ -7660,8 +7976,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     const noFab = allocated > 0 && (required <= 0 || allocated > required);
     const fuoriMansione = resource ? !roleMatches(resource, allocation.role) : false;
     const external = isExternalResourceLike(resource);
-    const inactive = isInactiveResource(resource);
-    const indisp = isUnavailableResource(resource);
+    const inactive = isInactiveResource(resource, periodKey);
+    const indisp = isUnavailableResource(resource, periodKey);
 
     return {
       periodKey,
@@ -7690,19 +8006,50 @@ document.addEventListener("DOMContentLoaded", async () => {
   }
 
   function loadVisibleResourceColumns() {
+    const withRequired = (cols) => Array.from(new Set([...(cols || []), ...REQUIRED_RESOURCE_VISIBLE_COLUMNS])).sort((a, b) => a - b);
     try {
       const raw = localStorage.getItem("oldWorkflowResourceVisibleColumns");
       const parsed = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return withRequired(parsed);
     } catch (error) {}
-    return DEFAULT_RESOURCE_VISIBLE_COLUMNS;
+    return withRequired(DEFAULT_RESOURCE_VISIBLE_COLUMNS);
   }
 
   function saveVisibleResourceColumns(cols) {
-    state.resourcesSheet.visibleColumns = cols;
+    const normalized = Array.from(new Set([...(cols || []), ...REQUIRED_RESOURCE_VISIBLE_COLUMNS])).sort((a, b) => a - b);
+    state.resourcesSheet.visibleColumns = normalized;
     try {
-      localStorage.setItem("oldWorkflowResourceVisibleColumns", JSON.stringify(cols));
+      localStorage.setItem("oldWorkflowResourceVisibleColumns", JSON.stringify(normalized));
     } catch (error) {}
+  }
+
+  function normalizeResourceColumnWidths(widths) {
+    const list = Array.isArray(widths) ? widths : [];
+    return RESOURCE_COLUMNS.map((_, idx) => Math.max(48, Number(list[idx] || DEFAULT_RESOURCE_COLUMN_WIDTHS[idx] || 100)));
+  }
+
+  function loadResourceColumnWidths() {
+    try {
+      const raw = localStorage.getItem("oldWorkflowResourceColumnWidths");
+      const parsed = raw ? JSON.parse(raw) : null;
+      return normalizeResourceColumnWidths(parsed);
+    } catch (error) {
+      return normalizeResourceColumnWidths(null);
+    }
+  }
+
+  function saveResourceColumnWidths(widths) {
+    try {
+      localStorage.setItem("oldWorkflowResourceColumnWidths", JSON.stringify(normalizeResourceColumnWidths(widths)));
+    } catch (error) {}
+  }
+
+  function applyResourceColumnWidths(widths = loadResourceColumnWidths()) {
+    document.querySelectorAll("#owResourcesColgroup col[data-column-index]").forEach((col) => {
+      const idx = Number(col.dataset.columnIndex || -1);
+      const width = widths[idx] || DEFAULT_RESOURCE_COLUMN_WIDTHS[idx] || 100;
+      col.style.width = `${Math.max(48, Number(width) || 100)}px`;
+    });
   }
 
   function ensureShells() {
@@ -7865,6 +8212,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             <option value="end_desc">Ordina: fine più lontana</option>
           </select>
           <button class="btn btn-light" id="owResourcesColumnsBtn" type="button">Colonne</button>
+          <button class="btn btn-light" id="owResourcesNewBtn" type="button">+ Nuova risorsa</button>
           <button class="btn btn-primary" id="owResourcesSaveBtn" type="button">Salva modifiche</button>
           <button class="btn btn-light" id="owResourcesReloadBtn" type="button">Ricarica</button>
           <button class="btn btn-light" id="owResourcesCloseBtn" type="button">Chiudi</button>
@@ -7877,6 +8225,52 @@ document.addEventListener("DOMContentLoaded", async () => {
           <thead id="owResourcesHead"></thead>
           <tbody id="owResourcesBody"></tbody>
         </table>
+      </div>
+      <div id="owResourcesNewModal" class="old-modal-shell" hidden>
+        <div class="old-modal-backdrop" data-close="1"></div>
+        <section class="old-modal-card ow-resource-new-modal">
+          <div class="old-modal-head">
+            <h2>Nuova risorsa</h2>
+            <button class="btn btn-light" id="owResourcesNewCloseBtn" type="button">Chiudi</button>
+          </div>
+          <div class="ow-resource-new-grid">
+            <label>
+              <span>Nome</span>
+              <input id="owResourceNewName" type="text" />
+            </label>
+            <label>
+              <span>Mansione 1</span>
+              <input id="owResourceNewRole" type="text" />
+            </label>
+            <label>
+              <span>Mansione 2</span>
+              <input id="owResourceNewRole2" type="text" />
+            </label>
+            <label>
+              <span>Data assunzione</span>
+              <input id="owResourceNewHireDate" type="text" placeholder="dd/mm/yyyy" />
+            </label>
+            <label>
+              <span>Data fine</span>
+              <input id="owResourceNewEndDate" type="text" placeholder="dd/mm/yyyy" />
+            </label>
+            <label>
+              <span>Stato</span>
+              <select id="owResourceNewStatus">
+                <option value="ATTIVO">ATTIVO</option>
+                <option value="INDISPONIBILE">INDISPONIBILE</option>
+                <option value="CESSATO">CESSATO</option>
+              </select>
+            </label>
+            <label class="ow-resource-new-note">
+              <span>Note operative</span>
+              <textarea id="owResourceNewNote" rows="3"></textarea>
+            </label>
+          </div>
+          <div class="old-gantt-action-buttons">
+            <button class="btn btn-primary" id="owResourcesCreateBtn" type="button">Crea risorsa</button>
+          </div>
+        </section>
       </div>
     `;
 
@@ -7993,7 +8387,13 @@ document.addEventListener("DOMContentLoaded", async () => {
   function showPlanner() {
     hideAllOperational();
     document.querySelectorAll(".planner-main, .planner-side, .planner-bottom").forEach((node) => node.hidden = false);
+    const shield = document.getElementById("operationalSheetShield");
+    if (shield) shield.hidden = true;
+    document.body.classList.remove("operational-sheet-open");
     refreshV2Planner();
+    setTimeout(() => {
+      if (plannerGridWrap) plannerGridWrap.focus();
+    }, 120);
   }
 
   async function refreshV2Planner() {
@@ -8163,8 +8563,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   function allocationCellHtml(resource, period) {
     const periodKey = Number(period.periodKey);
     const allocations = resourceAllocations(resource.id, periodKey);
-    const inactive = isInactiveResource(resource);
-    const indisp = isUnavailableResource(resource);
+    const inactive = isInactiveResource(resource, periodKey);
+    const indisp = isUnavailableResource(resource, periodKey);
     const external = isExternalResourceLike(resource);
 
     if (!allocations.length) {
@@ -8187,12 +8587,18 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (analysis.indisp) flags.push(`<span class="ow-badge ind" title="INDISPONIBILE">IND</span>`);
 
       const style = `--project-color:${projectColor(allocation.project_id)};--project-border:${projectBorder(allocation.project_id)}`;
-      const project = projectName(allocation.project_id).replace(/\s*\((SITE|OFFICINA|CANTIERE SERVICE)\)\s*/gi, "").trim();
+      const projectRaw = allocation.project_name || allocation.projectName || projectName(allocation.project_id);
+      const project = String(projectRaw || "").trim();
+      const roleFull = norm(allocation.role || "") || "-";
+      const loadPct = Number(allocation.load_percent || allocation.loadPercent || 100);
+      const loadLabel = Number.isFinite(loadPct) ? `${Math.round(loadPct)}%` : "100%";
+      const smallLabel = loadLabel;
+      const tip = `${project || projectName(allocation.project_id)} | Mansione richiesta: ${roleFull} | Carico: ${loadLabel}`;
 
       return `
-        <div class="ow-gantt-bar" style="${style}" data-allocation-id="${Number(allocation.id)}">
+        <div class="ow-gantt-bar" style="${style}" data-allocation-id="${Number(allocation.id)}" data-project-label="${esc(project || projectName(allocation.project_id))}" title="${esc(tip)}">
           <span>${esc(project)}</span>
-          <small>${esc(norm(allocation.role || ""))}</small>
+          <small>${esc(smallLabel)}</small>
           ${flags.join("")}
         </div>
       `;
@@ -8241,6 +8647,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           startPeriod: Number(cell.dataset.periodKey || 0),
           endPeriod: Number(cell.dataset.periodKey || 0),
           active: true,
+          moved: false,
         };
         selectGanttCell(cell);
         markDragSelection();
@@ -8249,12 +8656,20 @@ document.addEventListener("DOMContentLoaded", async () => {
       cell.addEventListener("pointerenter", () => {
         if (!state.gantt.drag?.active) return;
         if (Number(cell.dataset.resourceId || 0) !== Number(state.gantt.drag.resourceId)) return;
+        if (Number(cell.dataset.periodKey || 0) !== Number(state.gantt.drag.endPeriod || 0)) {
+          state.gantt.drag.moved = true;
+        }
         state.gantt.drag.endPeriod = Number(cell.dataset.periodKey || 0);
         markDragSelection();
       });
 
       cell.addEventListener("click", () => {
         selectGanttCell(cell);
+      });
+
+      cell.addEventListener("dblclick", () => {
+        selectGanttCell(cell);
+        openGanttActionModal();
       });
     });
 
@@ -8268,7 +8683,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         const from = Math.min(drag.startPeriod, drag.endPeriod);
         const to = Math.max(drag.startPeriod, drag.endPeriod);
 
-        if (state.gantt.selected && Number(state.gantt.selected.resourceId) === Number(drag.resourceId)) {
+        if (
+          drag.moved &&
+          state.gantt.selected &&
+          Number(state.gantt.selected.resourceId) === Number(drag.resourceId)
+        ) {
           state.gantt.selected.periodFrom = from;
           state.gantt.selected.periodTo = to;
           openGanttActionModal();
@@ -8766,10 +9185,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     const sortBy = state.resourcesSheet.sortBy;
 
     let rows = state.resources.filter((resource) => {
-      if (search && !norm(`${resource.id || ""} ${resource.name || ""} ${resource.role || ""} ${resource.availability_note || ""}`).includes(search)) return false;
+      const cleanNote = cleanOperationalNoteText(resource);
+      if (search && !norm(`${resource.id || ""} ${resource.name || ""} ${resource.role || ""} ${cleanNote} ${resource.availability_note || ""}`).includes(search)) return false;
       if (roleFilter && resourceRole(resource) !== roleFilter) return false;
-      if (status === "ATTIVO" && Number(resource.is_active) !== 1) return false;
-      if (status === "CESSATO" && Number(resource.is_active) === 1) return false;
+      const operational = resourceOperationalStatus(resource);
+      if (status) {
+        if (status === "CESSATO" && operational.label !== "CESSATO") return false;
+        else if (status === "FUORI CONTRATTO" && operational.label !== "FUORI CONTRATTO") return false;
+        else if (status !== "CESSATO" && status !== "FUORI CONTRATTO" && operational.label !== status) return false;
+      }
       return true;
     });
 
@@ -8781,9 +9205,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         return String(a.name || "").localeCompare(String(b.name || ""), "it", { numeric: true, sensitivity: "base" });
       }
       if (sortBy === "end_asc" || sortBy === "end_desc") {
-        const ae = String(a.end_date || a.availability_note || "");
-        const be = String(b.end_date || b.availability_note || "");
-        const cmp = ae.localeCompare(be, "it", { numeric: true, sensitivity: "base" });
+        const ae = resourceEndDateValue(a)?.getTime() || Number.MAX_SAFE_INTEGER;
+        const be = resourceEndDateValue(b)?.getTime() || Number.MAX_SAFE_INTEGER;
+        const cmp = ae - be;
         return sortBy === "end_desc" ? -cmp : cmp;
       }
       return String(a.name || "").localeCompare(String(b.name || ""), "it", { numeric: true, sensitivity: "base" });
@@ -8794,8 +9218,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   function resourceValue(resource, col) {
     if (col.key === "code") return resource.code || resource.id || "";
-    if (col.key === "role2") return resource.role2 || "";
-    if (col.key === "is_active") return Number(resource.is_active) === 1 ? "ATTIVO" : "CESSATO";
+    if (col.key === "role2") return resourceRole2Value(resource);
+    if (col.key === "hire_date") return resourceHireValue(resource);
+    if (col.key === "end_date") return resourceEndValue(resource);
+    if (col.key === "availability_note") return cleanOperationalNoteText(resource);
+    if (col.key === "is_active") return resourceOperationalStatus(resource).label;
     return resource[col.key] ?? "";
   }
 
@@ -8805,6 +9232,19 @@ document.addEventListener("DOMContentLoaded", async () => {
       const old = roleFilter.value;
       roleFilter.innerHTML = `<option value="">Tutte le mansioni</option>` + rolesList().map((role) => `<option value="${esc(role)}">${esc(role)}</option>`).join("");
       roleFilter.value = old;
+    }
+
+    const statusFilter = document.getElementById("owResourcesStatusFilter");
+    if (statusFilter) {
+      const old = statusFilter.value;
+      statusFilter.innerHTML = `
+        <option value="">Tutti gli stati</option>
+        <option value="ATTIVO">Solo attivi</option>
+        <option value="INDISPONIBILE">Solo indisponibili</option>
+        <option value="FUORI CONTRATTO">Solo fuori contratto</option>
+        <option value="CESSATO">Solo cessati</option>
+      `;
+      statusFilter.value = old;
     }
   }
 
@@ -8821,7 +9261,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       </div>
       ${RESOURCE_COLUMNS.map((col, idx) => `
         <label>
-          <input type="checkbox" data-column-index="${idx}" ${visible.has(idx) ? "checked" : ""} ${idx === 2 || idx === 29 || idx === 30 ? "disabled" : ""}/>
+          <input type="checkbox" data-column-index="${idx}" ${visible.has(idx) ? "checked" : ""} ${REQUIRED_RESOURCE_VISIBLE_COLUMNS.includes(idx) ? "disabled" : ""}/>
           <span>${esc(col.label)}</span>
         </label>
       `).join("")}
@@ -8838,9 +9278,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     panel.querySelectorAll("[data-column-index]").forEach((input) => {
       input.addEventListener("change", () => {
         const cols = Array.from(panel.querySelectorAll("[data-column-index]:checked")).map((node) => Number(node.dataset.columnIndex));
-        if (!cols.includes(2)) cols.push(2);
-        if (!cols.includes(29)) cols.push(29);
-        if (!cols.includes(30)) cols.push(30);
         saveVisibleResourceColumns(cols.sort((a, b) => a - b));
         renderResourceTable();
       });
@@ -8855,18 +9292,34 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     const visible = state.resourcesSheet.visibleColumns;
     const cols = visible.map((idx) => RESOURCE_COLUMNS[idx]).filter(Boolean);
+    resourceOriginalSnapshot = new Map();
+    deletedResourceIds = new Set();
 
-    colgroup.innerHTML = cols.map(() => `<col />`).join("");
-    head.innerHTML = `<tr>${cols.map((col) => `<th>${esc(col.label)}</th>`).join("")}</tr>`;
+    colgroup.innerHTML = cols.map((_, idx) => `<col data-column-index="${visible[idx]}" />`).join("");
+    head.innerHTML = `<tr>${cols.map((col, idx) => `<th data-column-index="${visible[idx]}">${esc(col.label)}</th>`).join("")}</tr>`;
+    applyResourceColumnWidths();
 
     const rows = filteredResourcesSheetRows();
 
     if (!rows.length) {
       body.innerHTML = `<tr><td class="ow-empty" colspan="${cols.length}">Nessuna risorsa.</td></tr>`;
+      bindResourceColumnResizers();
       return;
     }
 
     body.innerHTML = rows.map((resource) => {
+      const parsed = parseResourceNote(resource?.availability_note || "");
+      const rowSnapshot = {
+        name: String(resource?.name || ""),
+        role: String(resource?.role || ""),
+        role2: String(resource?.role2 || parsed.role2 || ""),
+        hire_date: String(resource?.hire_date || parsed.hire || ""),
+        end_date: String(resource?.end_date || parsed.end || ""),
+        availability_note: String(parsed.note || ""),
+        is_active: Number(resource?.is_active) === 1 ? 1 : 0,
+      };
+      resourceOriginalSnapshot.set(Number(resource.id), JSON.stringify(rowSnapshot));
+
       return `
         <tr data-resource-id="${Number(resource.id)}">
           ${cols.map((col) => {
@@ -8875,17 +9328,23 @@ document.addEventListener("DOMContentLoaded", async () => {
               return `<td><button class="btn btn-light ow-resource-row-save" type="button">Salva</button></td>`;
             }
             if (col.key === "is_active") {
+              const status = resourceOperationalStatus(resource);
+              const selectedValue = Number(resource?.is_active) === 1 ? "1" : "0";
               return `
                 <td>
-                  <select data-field="is_active">
-                    <option value="1" ${Number(resource.is_active) === 1 ? "selected" : ""}>ATTIVO</option>
-                    <option value="0" ${Number(resource.is_active) !== 1 ? "selected" : ""}>CESSATO</option>
+                  <select data-field="is_active" data-user-edited="0">
+                    <option value="1" ${selectedValue === "1" ? "selected" : ""}>ATTIVO</option>
+                    <option value="0" ${selectedValue === "0" ? "selected" : ""}>CESSATO</option>
                   </select>
+                  ${status.label !== "ATTIVO" ? `<div class="ow-status-chip">${esc(status.label)}</div>` : ""}
                 </td>
               `;
             }
             if (col.readonly) {
               return `<td>${esc(value)}</td>`;
+            }
+            if (col.key === "availability_note") {
+              return `<td><textarea data-field="${esc(col.key)}" rows="2">${esc(value)}</textarea></td>`;
             }
             return `<td><input data-field="${esc(col.key)}" value="${esc(value)}" /></td>`;
           }).join("")}
@@ -8894,17 +9353,72 @@ document.addEventListener("DOMContentLoaded", async () => {
     }).join("");
 
     bindResourceTableInputs();
+    bindResourceColumnResizers();
+  }
+
+  function bindResourceColumnResizers() {
+    const head = document.getElementById("owResourcesHead");
+    if (!head) return;
+
+    const widths = loadResourceColumnWidths();
+    applyResourceColumnWidths(widths);
+
+    head.querySelectorAll("th[data-column-index]").forEach((th) => {
+      th.querySelector(".ow-col-resizer")?.remove();
+      const grip = document.createElement("span");
+      grip.className = "ow-col-resizer";
+      grip.dataset.columnIndex = String(th.dataset.columnIndex || "");
+      th.appendChild(grip);
+
+      grip.addEventListener("pointerdown", (event) => {
+        const index = Number(grip.dataset.columnIndex || -1);
+        if (index < 0) return;
+        resourceColumnDrag = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startWidth: widths[index] || th.getBoundingClientRect().width,
+          index,
+          widths,
+        };
+        document.body.classList.add("ow-resource-col-resizing");
+        event.preventDefault();
+        event.stopPropagation();
+      });
+    });
+
+    if (!window.__owResourceColResizeBound) {
+      const onMove = (event) => {
+        if (!resourceColumnDrag) return;
+        const next = Math.max(48, Math.round(resourceColumnDrag.startWidth + (event.clientX - resourceColumnDrag.startX)));
+        resourceColumnDrag.widths[resourceColumnDrag.index] = next;
+        applyResourceColumnWidths(resourceColumnDrag.widths);
+      };
+
+      const onStop = () => {
+        if (!resourceColumnDrag) return;
+        saveResourceColumnWidths(resourceColumnDrag.widths);
+        document.body.classList.remove("ow-resource-col-resizing");
+        resourceColumnDrag = null;
+      };
+
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onStop);
+      window.addEventListener("pointercancel", onStop);
+      window.__owResourceColResizeBound = true;
+    }
   }
 
   function bindResourceTableInputs() {
     const body = document.getElementById("owResourcesBody");
     if (!body) return;
 
-    body.querySelectorAll("input, select").forEach((input) => {
+    body.querySelectorAll("input, select, textarea").forEach((input) => {
       input.addEventListener("input", () => {
+        if (input.dataset.field === "is_active") input.dataset.userEdited = "1";
         input.closest("tr")?.classList.add("dirty");
       });
       input.addEventListener("change", () => {
+        if (input.dataset.field === "is_active") input.dataset.userEdited = "1";
         input.closest("tr")?.classList.add("dirty");
       });
     });
@@ -8915,21 +9429,28 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
     });
 
-    body.querySelectorAll("input, select").forEach((el) => {
+    body.querySelectorAll("input, select, textarea").forEach((el) => {
       el.addEventListener("keydown", (event) => {
         const td = event.target.closest("td");
         const tr = event.target.closest("tr");
         if (!td || !tr) return;
+
+        if ((event.target.tagName || "") === "TEXTAREA" && (event.key === "ArrowUp" || event.key === "ArrowDown")) return;
+
+        const valueText = String(event.target.value || "");
+        const cursorStart = Number(event.target.selectionStart ?? valueText.length);
+        if (event.key === "ArrowRight" && cursorStart < valueText.length) return;
+        if (event.key === "ArrowLeft" && cursorStart > 0) return;
 
         const rows = Array.from(body.querySelectorAll("tr"));
         const rowIndex = rows.indexOf(tr);
         const cellIndex = Array.from(tr.children).indexOf(td);
         let target = null;
 
-        if (event.key === "ArrowDown") target = rows[rowIndex + 1]?.children[cellIndex]?.querySelector("input, select");
-        if (event.key === "ArrowUp") target = rows[rowIndex - 1]?.children[cellIndex]?.querySelector("input, select");
-        if (event.key === "ArrowRight") target = td.nextElementSibling?.querySelector("input, select");
-        if (event.key === "ArrowLeft") target = td.previousElementSibling?.querySelector("input, select");
+        if (event.key === "ArrowDown") target = rows[rowIndex + 1]?.children[cellIndex]?.querySelector("input, select, textarea");
+        if (event.key === "ArrowUp") target = rows[rowIndex - 1]?.children[cellIndex]?.querySelector("input, select, textarea");
+        if (event.key === "ArrowRight") target = td.nextElementSibling?.querySelector("input, select, textarea");
+        if (event.key === "ArrowLeft") target = td.previousElementSibling?.querySelector("input, select, textarea");
 
         if (target) {
           event.preventDefault();
@@ -8949,28 +9470,84 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (!id) return;
 
       const original = resourceById(id) || {};
-      const row = {
+      const draft = {
         id,
-        name: original.name || "",
-        role: original.role || "",
-        availability_note: original.availability_note || "",
+        name: String(original.name || ""),
+        role: String(original.role || ""),
+        role2: resourceRole2Value(original),
+        hire_date: resourceHireValue(original),
+        end_date: resourceEndValue(original),
+        availability_note: cleanOperationalNoteText(original),
         is_active: Number(original.is_active) === 1 ? 1 : 0,
       };
 
       tr.querySelectorAll("[data-field]").forEach((input) => {
         const field = input.dataset.field;
-        if (field === "is_active") row.is_active = Number(input.value || 0);
-        else row[field] = input.value || "";
+        if (field === "is_active") {
+          if (input.dataset.userEdited === "1") {
+            draft.is_active = Number(input.value || 0);
+          } else {
+            draft.is_active = Number(original.is_active) === 1 ? 1 : 0;
+          }
+          return;
+        }
+        if (field === "name") {
+          draft.name = String(input.value || "").trim();
+          return;
+        }
+        if (field === "role") {
+          draft.role = norm(input.value || "");
+          return;
+        }
+        if (field === "role2" || field === "hire_date" || field === "end_date" || field === "availability_note") {
+          draft[field] = String(input.value || "").trim();
+        }
       });
 
-      rows.push(row);
+      const normalizedNote = buildResourceNote({
+        hire: draft.hire_date,
+        end: draft.end_date,
+        role2: draft.role2,
+        note: draft.availability_note,
+        originalNote: original.availability_note || "",
+      });
+
+      const row = {
+        id,
+        name: String(draft.name || "").trim(),
+        role: norm(draft.role || ""),
+        availability_note: normalizedNote,
+        is_active: Number(draft.is_active) === 1 ? 1 : 0,
+      };
+
+      if (!row.name || !row.role) {
+        throw new Error(`La risorsa ${id} richiede nome e mansione.`);
+      }
+
+      const snapshot = JSON.stringify({
+        name: row.name,
+        role: row.role,
+        role2: String(draft.role2 || ""),
+        hire_date: String(draft.hire_date || ""),
+        end_date: String(draft.end_date || ""),
+        availability_note: String(draft.availability_note || ""),
+        is_active: row.is_active,
+      });
+      const originalSnapshot = resourceOriginalSnapshot.get(id) || "";
+      if (snapshot !== originalSnapshot) rows.push(row);
     });
 
     return rows;
   }
 
   async function saveResources(scope = null) {
-    const rows = collectResourceRows(scope);
+    let rows = [];
+    try {
+      rows = collectResourceRows(scope);
+    } catch (error) {
+      alert(error?.message || "Dati risorsa non validi.");
+      return;
+    }
     if (!rows.length) {
       alert("Nessuna modifica da salvare.");
       return;
@@ -8992,6 +9569,83 @@ document.addEventListener("DOMContentLoaded", async () => {
     await refreshV2Planner();
 
     alert(`Risorse salvate: ${result.changed || 0}`);
+  }
+
+  function openNewResourceModal() {
+    const modal = document.getElementById("owResourcesNewModal");
+    if (!modal) return;
+    const roleInput = document.getElementById("owResourceNewRole");
+    const roles = rolesList();
+
+    const name = document.getElementById("owResourceNewName");
+    const role2 = document.getElementById("owResourceNewRole2");
+    const hireDate = document.getElementById("owResourceNewHireDate");
+    const endDate = document.getElementById("owResourceNewEndDate");
+    const note = document.getElementById("owResourceNewNote");
+    const status = document.getElementById("owResourceNewStatus");
+
+    if (name) name.value = "";
+    if (roleInput) roleInput.value = roles[0] || "";
+    if (role2) role2.value = "";
+    if (hireDate) hireDate.value = "";
+    if (endDate) endDate.value = "";
+    if (note) note.value = "";
+    if (status) status.value = "ATTIVO";
+
+    modal.hidden = false;
+    setTimeout(() => name?.focus(), 20);
+  }
+
+  function closeNewResourceModal() {
+    const modal = document.getElementById("owResourcesNewModal");
+    if (modal) modal.hidden = true;
+  }
+
+  async function createNewResource() {
+    const name = String(document.getElementById("owResourceNewName")?.value || "").trim();
+    const role = norm(document.getElementById("owResourceNewRole")?.value || "");
+    const role2 = String(document.getElementById("owResourceNewRole2")?.value || "").trim();
+    const hire = String(document.getElementById("owResourceNewHireDate")?.value || "").trim();
+    const end = String(document.getElementById("owResourceNewEndDate")?.value || "").trim();
+    const status = String(document.getElementById("owResourceNewStatus")?.value || "ATTIVO").trim().toUpperCase();
+    let note = String(document.getElementById("owResourceNewNote")?.value || "").trim();
+
+    if (!name || !role) {
+      alert("Compila almeno nome e mansione.");
+      return;
+    }
+
+    if (status === "INDISPONIBILE") {
+      const upper = norm(note);
+      if (!upper.includes("INDISP") && !upper.includes("NON DISPONIBILE")) {
+        note = note ? `${note} | INDISP` : "INDISP";
+      }
+    }
+
+    const availabilityNote = buildResourceNote({
+      hire,
+      end,
+      role2,
+      note,
+      originalNote: "",
+    });
+
+    await fetchJson("/api/resources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        role,
+        availability_note: availabilityNote,
+        is_active: status === "CESSATO" ? 0 : 1,
+      }),
+    });
+
+    closeNewResourceModal();
+    await loadState();
+    renderResourcesSheet();
+    await refreshV2Planner();
+    alert("Nuova risorsa creata.");
   }
 
   function bindResourceControls() {
@@ -9018,6 +9672,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       });
     }
 
+    const addBtn = document.getElementById("owResourcesNewBtn");
+    if (addBtn && addBtn.dataset.bound !== "1") {
+      addBtn.dataset.bound = "1";
+      addBtn.addEventListener("click", openNewResourceModal);
+    }
+
     const save = document.getElementById("owResourcesSaveBtn");
     if (save && save.dataset.bound !== "1") {
       save.dataset.bound = "1";
@@ -9037,6 +9697,26 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (close && close.dataset.bound !== "1") {
       close.dataset.bound = "1";
       close.addEventListener("click", showPlanner);
+    }
+
+    const modal = document.getElementById("owResourcesNewModal");
+    if (modal && modal.dataset.bound !== "1") {
+      modal.dataset.bound = "1";
+      modal.addEventListener("click", (event) => {
+        if (event.target?.dataset?.close === "1") closeNewResourceModal();
+      });
+    }
+
+    const modalClose = document.getElementById("owResourcesNewCloseBtn");
+    if (modalClose && modalClose.dataset.bound !== "1") {
+      modalClose.dataset.bound = "1";
+      modalClose.addEventListener("click", closeNewResourceModal);
+    }
+
+    const createBtn = document.getElementById("owResourcesCreateBtn");
+    if (createBtn && createBtn.dataset.bound !== "1") {
+      createBtn.dataset.bound = "1";
+      createBtn.addEventListener("click", () => createNewResource().catch((err) => alert(err?.message || "Errore creazione risorsa.")));
     }
   }
 

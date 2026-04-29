@@ -3162,15 +3162,20 @@ body.operational-sheet-open #sideInnerSplitter {
 }
 
 .ow-gantt-bar span {
+  flex: 1 1 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
 }
 
 .ow-gantt-bar small {
-  font-size: 9px;
+  font-size: 8px;
   color: #334155;
   flex: 0 0 auto;
+  max-width: 46px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ow-badge {
@@ -3446,15 +3451,108 @@ body.operational-sheet-open #sideInnerSplitter {
   font-size: 12px;
 }
 
+.old-resources-table td textarea {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  resize: vertical;
+}
+
 .old-resources-table td input:focus,
-.old-resources-table td select:focus {
+.old-resources-table td select:focus,
+.old-resources-table td textarea:focus {
   outline: none;
   background: #eff6ff;
   border-color: #2563eb;
 }
 
+.old-resources-table th[data-column-index] {
+  position: sticky;
+}
+
+.ow-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+
+.ow-col-resizer::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  right: 3px;
+  width: 1px;
+  background: rgba(148, 163, 184, 0.65);
+}
+
+body.ow-resource-col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.ow-status-chip {
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #b91c1c;
+  white-space: nowrap;
+}
+
 .old-resources-table tr.dirty td {
   background: #fff7ed;
+}
+
+.ow-resource-new-modal {
+  width: min(760px, calc(100vw - 32px));
+}
+
+.ow-resource-new-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.ow-resource-new-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #334155;
+}
+
+.ow-resource-new-grid input,
+.ow-resource-new-grid select,
+.ow-resource-new-grid textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #ffffff;
+  font-size: 12px;
+  padding: 6px 8px;
+}
+
+.ow-resource-new-grid input,
+.ow-resource-new-grid select {
+  height: 32px;
+}
+
+.ow-resource-new-grid textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.ow-resource-new-note {
+  grid-column: 1 / -1;
 }
 
 .ow-empty {
@@ -3464,3 +3562,17 @@ body.operational-sheet-open #sideInnerSplitter {
 }
 
 /* === OLD WORKFLOW GANTT RESOURCES CSS END === */
+
+/* === FIX PROJECTS SHEET ABOVE OPERATIONAL SHIELD START === */
+
+#projectsSheetV2 {
+  z-index: 70000 !important;
+  pointer-events: auto !important;
+}
+
+body.operational-sheet-open #projectsSheetV2,
+body.operational-sheet-open #projectsSheetV2 * {
+  pointer-events: auto !important;
+}
+
+/* === FIX PROJECTS SHEET ABOVE OPERATIONAL SHIELD END === */
