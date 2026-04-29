@@ -2374,6 +2374,216 @@ def _projects_sheet_insert_history(conn, project, role, week, period_key, old_qu
         pass
 
 
+# === DEMAND SNAPSHOTS START ===
+
+def _demand_snapshots_ensure_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS demand_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            label TEXT DEFAULT '',
+            trigger_type TEXT DEFAULT '',
+            note TEXT DEFAULT ''
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS demand_snapshot_rows (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            project_id INTEGER DEFAULT 0,
+            project_name TEXT DEFAULT '',
+            source_type TEXT DEFAULT '',
+            source_project_name TEXT DEFAULT '',
+            role TEXT DEFAULT '',
+            week INTEGER DEFAULT 0,
+            period_key INTEGER DEFAULT 0,
+            quantity REAL DEFAULT 0,
+            FOREIGN KEY(snapshot_id) REFERENCES demand_snapshots(id)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_demand_snapshot_rows_snapshot
+        ON demand_snapshot_rows(snapshot_id)
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_demand_snapshot_rows_key
+        ON demand_snapshot_rows(project_name, source_project_name, role, period_key)
+        """
+    )
+
+
+def _create_demand_snapshot(conn, label="", trigger_type="SAVE_DEMANDS", note=""):
+    _demand_snapshots_ensure_schema(conn)
+
+    label = str(label or "").strip()
+    trigger_type = str(trigger_type or "SAVE_DEMANDS").strip()
+    note = str(note or "").strip()
+
+    cur = conn.execute(
+        """
+        INSERT INTO demand_snapshots(label, trigger_type, note)
+        VALUES (?, ?, ?)
+        """,
+        (label, trigger_type, note),
+    )
+    snapshot_id = int(cur.lastrowid)
+
+    # Commesse normali/SITE/SERVICE da demands.
+    demand_rows = conn.execute(
+        """
+        SELECT
+            d.project_id,
+            p.name AS project_name,
+            d.role,
+            d.week,
+            COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
+            d.quantity
+        FROM demands d
+        JOIN projects p ON p.id = d.project_id
+        WHERE COALESCE(d.quantity, 0) <> 0
+        ORDER BY p.name, d.role, period_key
+        """
+    ).fetchall()
+
+    for row in demand_rows:
+        conn.execute(
+            """
+            INSERT INTO demand_snapshot_rows(
+                snapshot_id,
+                project_id,
+                project_name,
+                source_type,
+                source_project_name,
+                role,
+                week,
+                period_key,
+                quantity
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot_id,
+                int(row["project_id"] or 0),
+                row["project_name"] or "",
+                "PROJECT",
+                row["project_name"] or "",
+                _projects_sheet_norm(row["role"] or ""),
+                int(row["week"] or 0),
+                int(row["period_key"] or 0),
+                float(row["quantity"] or 0),
+            ),
+        )
+
+    # OVERALL/OFFICINA da workshop_rollup_sources, se presente.
+    try:
+        rollup_rows = conn.execute(
+            """
+            SELECT
+                w.overall_project_id,
+                COALESCE(p.name, 'OVERALL OFFICINA') AS overall_project_name,
+                w.source_project_name,
+                w.role,
+                w.week,
+                COALESCE(NULLIF(w.period_key, 0), 2600 + w.week) AS period_key,
+                w.required
+            FROM workshop_rollup_sources w
+            LEFT JOIN projects p ON p.id = w.overall_project_id
+            WHERE COALESCE(w.required, 0) <> 0
+            ORDER BY overall_project_name, w.source_project_name, w.role, period_key
+            """
+        ).fetchall()
+
+        for row in rollup_rows:
+            conn.execute(
+                """
+                INSERT INTO demand_snapshot_rows(
+                    snapshot_id,
+                    project_id,
+                    project_name,
+                    source_type,
+                    source_project_name,
+                    role,
+                    week,
+                    period_key,
+                    quantity
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    int(row["overall_project_id"] or 0),
+                    row["overall_project_name"] or "OVERALL OFFICINA",
+                    "WORKSHOP_ROLLUP",
+                    row["source_project_name"] or "",
+                    _projects_sheet_norm(row["role"] or ""),
+                    int(row["week"] or 0),
+                    int(row["period_key"] or 0),
+                    float(row["required"] or 0),
+                ),
+            )
+    except Exception:
+        # Se la tabella rollup non esiste in un ambiente pulito, lo snapshot resta valido per demands.
+        pass
+
+    total_rows = conn.execute(
+        """
+        SELECT COUNT(*) AS n
+        FROM demand_snapshot_rows
+        WHERE snapshot_id = ?
+        """,
+        (snapshot_id,),
+    ).fetchone()["n"]
+
+    return {
+        "id": snapshot_id,
+        "rows": int(total_rows or 0),
+        "label": label,
+        "trigger_type": trigger_type,
+    }
+
+
+@app.get("/api/demand-snapshots")
+def demand_snapshots_list():
+    conn = get_connection()
+    try:
+        _demand_snapshots_ensure_schema(conn)
+        rows = conn.execute(
+            """
+            SELECT
+                s.id,
+                s.created_at,
+                s.label,
+                s.trigger_type,
+                s.note,
+                COUNT(r.id) AS row_count
+            FROM demand_snapshots s
+            LEFT JOIN demand_snapshot_rows r ON r.snapshot_id = s.id
+            GROUP BY s.id
+            ORDER BY s.id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+
+        return {
+            "ok": True,
+            "snapshots": [dict(row) for row in rows],
+        }
+    finally:
+        conn.close()
+
+
+# === DEMAND SNAPSHOTS END ===
+
 @app.get("/api/projects-sheet/projects")
 def projects_sheet_projects():
     conn = get_connection()
@@ -2792,6 +3002,13 @@ def projects_sheet_save_demands(payload: dict):
                         )
                         history += 1
 
+        snapshot = _create_demand_snapshot(
+            conn,
+            label="Salva fabbisogni",
+            trigger_type="SAVE_PROJECT_DEMANDS",
+            note=f"project_id={project_id}",
+        )
+
         conn.commit()
 
         return {
@@ -2799,6 +3016,7 @@ def projects_sheet_save_demands(payload: dict):
             "changed": changed,
             "inserted": inserted,
             "history": history,
+            "snapshot": snapshot,
         }
     finally:
         conn.close()
@@ -2959,6 +3177,13 @@ def projects_sheet_save_workshop_rollup(payload: dict):
                 )
                 inserted += 1
 
+        snapshot = _create_demand_snapshot(
+            conn,
+            label="Salva fabbisogni rollup",
+            trigger_type="SAVE_WORKSHOP_ROLLUP",
+            note=f"overall_project_id={overall_project_id}",
+        )
+
         conn.commit()
 
         return {
@@ -2968,6 +3193,7 @@ def projects_sheet_save_workshop_rollup(payload: dict):
             "deleted": deleted,
             "skipped": skipped,
             "deduped": deduped,
+            "snapshot": snapshot,
         }
     finally:
         conn.close()
