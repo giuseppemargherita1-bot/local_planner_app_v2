@@ -8367,11 +8367,11 @@ function findMatchingChildProject(childProjectName) {
             </label>
             <label>
               <span>Mansione 1</span>
-              <input id="owResourceNewRole" type="text" />
+              <select id="owResourceNewRole"></select>
             </label>
             <label>
               <span>Mansione 2</span>
-              <input id="owResourceNewRole2" type="text" />
+              <select id="owResourceNewRole2"></select>
             </label>
             <label>
               <span>Data assunzione</span>
@@ -9698,9 +9698,68 @@ function findMatchingChildProject(childProjectName) {
     alert(`Risorse salvate: ${result.changed || 0}`);
   }
 
+
+  function resourceRoleOptionsHtml({ allowEmpty = false } = {}) {
+    const roles = [];
+
+    try {
+      if (typeof rolesList === "function") {
+        roles.push(...rolesList());
+      }
+    } catch (error) {}
+
+    try {
+      if (typeof allRoles === "function") {
+        roles.push(...allRoles());
+      }
+    } catch (error) {}
+
+    try {
+      if (typeof OLD_WORKFLOW_ROLE_ORDER !== "undefined" && Array.isArray(OLD_WORKFLOW_ROLE_ORDER)) {
+        OLD_WORKFLOW_ROLE_ORDER.forEach((role) => {
+          const value = norm(role || "");
+          if (value) roles.push(value);
+        });
+      }
+    } catch (error) {}
+
+    try {
+      if (Array.isArray(state?.resources)) {
+        state.resources.forEach((resource) => {
+          const role = norm(resource?.role || "");
+          if (role) roles.push(role);
+        });
+      }
+    } catch (error) {}
+
+    const unique = Array.from(new Set(roles.map((role) => norm(role)).filter(Boolean))).sort((a, b) => {
+      try {
+        if (typeof roleSortKeyV2 === "function") {
+          return roleSortKeyV2(a).localeCompare(roleSortKeyV2(b), "it", { numeric: true, sensitivity: "base" });
+        }
+      } catch (error) {}
+
+      return a.localeCompare(b, "it", { numeric: true, sensitivity: "base" });
+    });
+
+    return `${allowEmpty ? '<option value="">- Nessuna -</option>' : '<option value="">Seleziona mansione</option>'}` +
+      unique.map((role) => `<option value="${esc(role)}">${esc(role)}</option>`).join("");
+  }
+
+  function populateNewResourceRoleSelects() {
+    const role = document.getElementById("owResourceNewRole");
+    const role2 = document.getElementById("owResourceNewRole2");
+
+    if (role) role.innerHTML = resourceRoleOptionsHtml({ allowEmpty: false });
+    if (role2) role2.innerHTML = resourceRoleOptionsHtml({ allowEmpty: true });
+  }
+
   function openNewResourceModal() {
     const modal = document.getElementById("owResourcesNewModal");
     if (!modal) return;
+
+    populateNewResourceRoleSelects();
+
     const roleInput = document.getElementById("owResourceNewRole");
     const roles = rolesList();
 
