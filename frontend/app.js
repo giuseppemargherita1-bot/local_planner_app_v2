@@ -8065,20 +8065,88 @@ function findMatchingChildProject(childProjectName) {
     return text.includes("-EXT") || text.endsWith(" EXT") || text.includes(" ESTERNO");
   }
 
+
+  function periodStartDateValue(periodKey) {
+    const key = Number(periodKey || 0);
+    const week = key >= 1000 ? key % 100 : key;
+    const yearShort = key >= 1000 ? Math.floor(key / 100) : 26;
+    const year = 2000 + yearShort;
+
+    if (!week || !year) return null;
+
+    const jan4 = new Date(Date.UTC(year, 0, 4));
+    const jan4Day = jan4.getUTCDay() || 7;
+    const week1Monday = new Date(jan4);
+    week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1);
+
+    const start = new Date(week1Monday);
+    start.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+    start.setUTCHours(0, 0, 0, 0);
+
+    return start;
+  }
+
   function isInactiveResource(resource, periodKey = CURRENT_PERIOD_KEY) {
-    if (Number(resource?.is_active) !== 1) return true;
+    if (!resource) return true;
+
+    if (isExternalResourceLike(resource)) {
+      return false;
+    }
+
+    const endDate = resourceEndDateValue(resource);
+    if (endDate instanceof Date && !Number.isNaN(endDate.getTime())) {
+      const periodStart = periodStartDateValue(periodKey);
+      if (!(periodStart instanceof Date) || Number.isNaN(periodStart.getTime())) {
+        return Number(resource?.is_active) !== 1;
+      }
+
+      const end = new Date(endDate);
+      end.setHours(23, 59, 59, 999);
+
+      return periodStart > end;
+    }
+
+    if (Number(resource?.is_active) !== 1) {
+      return true;
+    }
+
     if (typeof isResourceContractEndedForPeriod === "function") {
       return isResourceContractEndedForPeriod(resource, periodKey);
     }
+
     return false;
   }
 
+
+  function resourceUnavailabilityForPeriod(resourceId, periodKey) {
+    const rid = Number(resourceId || 0);
+    const key = Number(periodKey || 0);
+
+    return (state.resource_unavailability || []).find((item) => {
+      return Number(item.resource_id) === rid &&
+        Number(item.period_key_from || 0) <= key &&
+        Number(item.period_key_to || 0) >= key;
+    }) || null;
+  }
+
+  function resourceUnavailabilityRange(resourceId, periodFrom, periodTo) {
+    const rid = Number(resourceId || 0);
+    const from = Number(periodFrom || 0);
+    const to = Number(periodTo || from);
+
+    return (state.resource_unavailability || []).filter((item) => {
+      return Number(item.resource_id) === rid &&
+        Number(item.period_key_from || 0) <= to &&
+        Number(item.period_key_to || 0) >= from;
+    });
+  }
+
   function isUnavailableResource(resource, periodKey = CURRENT_PERIOD_KEY) {
+    if (resourceUnavailabilityForPeriod(resource?.id, periodKey)) return true;
+
     const text = norm(resource?.availability_note || "");
     if (text.includes("INDISP") || text.includes("NON DISPONIBILE")) return true;
-    if (typeof isResourceContractEndedForPeriod === "function") {
-      return isResourceContractEndedForPeriod(resource, periodKey);
-    }
+
     return false;
   }
 
@@ -8325,6 +8393,7 @@ function findMatchingChildProject(childProjectName) {
           </div>
           <div id="owGanttConflictBox" class="old-gantt-conflict-box"></div>
           <div class="old-gantt-action-buttons">
+            <button class="btn btn-light" id="owGanttActionMakeIndisp" type="button">Rendi INDISP</button>
             <button class="btn btn-light danger-btn" id="owGanttActionDeleteIndisp" type="button" hidden>Elimina INDISP</button>
             <button class="btn btn-light danger-btn" id="owGanttActionUnassign" type="button">Svincola periodo</button>
             <button class="btn btn-light" id="owGanttActionDemandSave" type="button">Aggiorna fabbisogno</button>
@@ -8573,6 +8642,7 @@ function findMatchingChildProject(childProjectName) {
     state.projects = result.projects || [];
     state.demands = result.demands || [];
     state.allocations = result.allocations || [];
+    state.resource_unavailability = result.resource_unavailability || result.resourceUnavailability || [];
     state.allocationHistory = result.allocation_history || [];
     state.demandHistory = result.demand_history || [];
   }
@@ -8661,6 +8731,13 @@ function findMatchingChildProject(childProjectName) {
         if (aHas !== bHas) return aHas ? -1 : 1;
 
         if (!aHas && !bHas) {
+          const aExt = isExternalResourceLike(a) ? 1 : 0;
+          const bExt = isExternalResourceLike(b) ? 1 : 0;
+
+          if (aExt !== bExt) {
+            return aExt - bExt;
+          }
+
           return String(a.name || "").localeCompare(String(b.name || ""), "it", { numeric: true, sensitivity: "base" });
         }
 
@@ -8675,6 +8752,13 @@ function findMatchingChildProject(childProjectName) {
       });
     } else {
       rows = rows.sort((a, b) => {
+        const aExt = isExternalResourceLike(a) ? 1 : 0;
+        const bExt = isExternalResourceLike(b) ? 1 : 0;
+
+        if (aExt !== bExt) {
+          return aExt - bExt;
+        }
+
         return String(a.name || "").localeCompare(String(b.name || ""), "it", { numeric: true, sensitivity: "base" });
       });
     }
@@ -8728,7 +8812,9 @@ function findMatchingChildProject(childProjectName) {
 
     if (!allocations.length) {
       const cls = inactive ? " ended" : indisp ? " indisp" : " available";
-      return `<td class="ow-gantt-cell${cls}" data-resource-id="${Number(resource.id)}" data-period-key="${periodKey}"></td>`;
+      const unavailable = resourceUnavailabilityForPeriod(resource.id, periodKey);
+      const label = unavailable ? `<div class="ow-gantt-unavailable" title="${esc(unavailable.reason || "INDISP")}">INDISP</div>` : "";
+      return `<td class="ow-gantt-cell${cls}" data-resource-id="${Number(resource.id)}" data-period-key="${periodKey}">${label}</td>`;
     }
 
     const classes = ["ow-gantt-cell", "assigned"];
@@ -9030,6 +9116,8 @@ function findMatchingChildProject(childProjectName) {
     const to = document.getElementById("owGanttActionTo");
     const required = document.getElementById("owGanttActionRequired");
     const hours = document.getElementById("owGanttActionHours");
+    const makeIndisp = document.getElementById("owGanttActionMakeIndisp");
+    const deleteIndisp = document.getElementById("owGanttActionDeleteIndisp");
 
     renderSelectOptions();
 
@@ -9055,6 +9143,17 @@ function findMatchingChildProject(childProjectName) {
     }
 
     renderGanttActionConflicts();
+
+    const unavailable = resourceUnavailabilityRange(selected.resourceId, selected.periodFrom, selected.periodTo);
+
+    if (deleteIndisp) {
+      deleteIndisp.hidden = unavailable.length === 0;
+      deleteIndisp.dataset.unavailabilityIds = unavailable.map((item) => item.id).join(",");
+    }
+
+    if (makeIndisp) {
+      makeIndisp.hidden = selected.allocations.length > 0;
+    }
 
     if (modal) modal.hidden = false;
   }
@@ -9182,6 +9281,68 @@ function findMatchingChildProject(childProjectName) {
     renderGanttActionConflicts();
   }
 
+
+  async function makeGanttUnavailable() {
+    const selected = state.gantt.selected;
+    if (!selected) return;
+
+    if (selected.allocations.length > 0) {
+      alert("La cella ha gia allocazioni. Svincola prima la risorsa.");
+      return;
+    }
+
+    const result = await fetchJson("/api/resource-unavailability", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        resource_id: selected.resourceId,
+        period_key_from: toPeriodKey(document.getElementById("owGanttActionFrom")?.value || selected.periodFrom),
+        period_key_to: toPeriodKey(document.getElementById("owGanttActionTo")?.value || selected.periodTo),
+        reason: "INDISP",
+        note: "Inserita da Gantt",
+      }),
+    });
+
+    if (!result.ok) {
+      alert(result.error || "Errore inserimento INDISP.");
+      return;
+    }
+
+    closeGanttActionModal();
+    await loadState();
+    renderGantt();
+    await refreshV2Planner();
+  }
+
+  async function deleteGanttUnavailable() {
+    const btn = document.getElementById("owGanttActionDeleteIndisp");
+    const ids = String(btn?.dataset?.unavailabilityIds || "")
+      .split(",")
+      .map((value) => Number(value || 0))
+      .filter(Boolean);
+
+    if (!ids.length) {
+      alert("Nessuna indisponibilita da eliminare.");
+      return;
+    }
+
+    for (const id of ids) {
+      const result = await fetchJson(`/api/resource-unavailability/${id}`, {
+        method: "DELETE",
+      });
+
+      if (!result.ok) {
+        alert(result.error || "Errore eliminazione INDISP.");
+        return;
+      }
+    }
+
+    closeGanttActionModal();
+    await loadState();
+    renderGantt();
+    await refreshV2Planner();
+  }
+
   function closeGanttActionModal() {
     const modal = document.getElementById("owGanttActionModal");
     if (modal) modal.hidden = true;
@@ -9258,6 +9419,18 @@ function findMatchingChildProject(childProjectName) {
     if (save && save.dataset.bound !== "1") {
       save.dataset.bound = "1";
       save.addEventListener("click", () => saveGanttAction().catch((err) => alert(err.message || "Errore Gantt")));
+    }
+
+    const makeIndisp = document.getElementById("owGanttActionMakeIndisp");
+    if (makeIndisp && makeIndisp.dataset.bound !== "1") {
+      makeIndisp.dataset.bound = "1";
+      makeIndisp.addEventListener("click", () => makeGanttUnavailable().catch((err) => alert(err.message || "Errore INDISP")));
+    }
+
+    const deleteIndisp = document.getElementById("owGanttActionDeleteIndisp");
+    if (deleteIndisp && deleteIndisp.dataset.bound !== "1") {
+      deleteIndisp.dataset.bound = "1";
+      deleteIndisp.addEventListener("click", () => deleteGanttUnavailable().catch((err) => alert(err.message || "Errore eliminazione INDISP")));
     }
 
     const unassign = document.getElementById("owGanttActionUnassign");
