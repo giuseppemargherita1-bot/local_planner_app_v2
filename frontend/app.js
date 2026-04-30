@@ -49,6 +49,34 @@ const PERIOD_YEAR_SHORT = Math.floor(CURRENT_PERIOD_KEY / 100);
 const FIRST_WEEK = 1;
 const LAST_WEEK = 52;
 
+function isoWeekDateRangeLabel(periodKey) {
+  const key = Number(periodKey || 0);
+  const week = key >= 1000 ? key % 100 : key;
+  const yearShort = key >= 1000 ? Math.floor(key / 100) : 26;
+  const year = 2000 + yearShort;
+
+  if (!week || !year) return "";
+
+  const jan4 = new Date(Date.UTC(year, 0, 4));
+  const jan4Day = jan4.getUTCDay() || 7;
+  const week1Monday = new Date(jan4);
+  week1Monday.setUTCDate(jan4.getUTCDate() - jan4Day + 1);
+
+  const monday = new Date(week1Monday);
+  monday.setUTCDate(week1Monday.getUTCDate() + (week - 1) * 7);
+
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+
+  const fmtDate = (date) => {
+    const d = String(date.getUTCDate()).padStart(2, "0");
+    const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+    return `${d}/${m}`;
+  };
+
+  return `${fmtDate(monday)} - ${fmtDate(sunday)}`;
+}
+
 const PERIODS = Array.from({ length: LAST_WEEK - FIRST_WEEK + 1 }, (_, i) => {
   const week = FIRST_WEEK + i;
   return {
@@ -6936,7 +6964,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         <th class="psv2-total-head">Totale</th>
         ${PERIODS.map((period) => {
           const current = Number(period.periodKey) === Number(CURRENT_PERIOD_KEY) ? " current-week" : "";
-          return `<th class="psv2-week${current}">${esc(period.label)}</th>`;
+          const range = isoWeekDateRangeLabel(period.periodKey);
+          const title = range ? `${period.label} → ${range}` : period.label;
+          return `<th class="psv2-week${current}" title="${esc(title)}">${esc(period.label)}</th>`;
         }).join("")}
       </tr>
     `;
@@ -8662,9 +8692,11 @@ function findMatchingChildProject(childProjectName) {
         <th class="ow-gantt-role-head">Mansione</th>
         ${PERIODS.map((period) => {
           const current = Number(period.periodKey) === Number(CURRENT_PERIOD_KEY) ? " current-week" : "";
+          const range = isoWeekDateRangeLabel(period.periodKey);
+          const title = range ? `${periodLabel(period.periodKey)} → ${range}` : periodLabel(period.periodKey);
           return `
-            <th class="ow-gantt-week${current}" data-period-key="${Number(period.periodKey)}">
-              <button type="button" data-sort-period="${Number(period.periodKey)}">
+            <th class="ow-gantt-week${current}" data-period-key="${Number(period.periodKey)}" title="${esc(title)}">
+              <button type="button" data-sort-period="${Number(period.periodKey)}" title="${esc(title)}">
                 <strong>${esc(periodLabel(period.periodKey))}</strong>
                 <span>${esc(weekLabel(period.periodKey))}</span>
               </button>
