@@ -3681,6 +3681,240 @@ def _ow_payload_range(payload: dict):
     return _ow_period_range(start, end)
 
 
+# === RESOURCE UNAVAILABILITY START ===
+
+def _resource_unavailability_ensure_schema(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS resource_unavailability (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource_id INTEGER NOT NULL,
+            period_key_from INTEGER NOT NULL,
+            period_key_to INTEGER NOT NULL,
+            reason TEXT DEFAULT 'INDISP',
+            note TEXT DEFAULT '',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(resource_id, period_key_from, period_key_to, reason)
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_resource_unavailability_resource_period
+        ON resource_unavailability(resource_id, period_key_from, period_key_to)
+        """
+    )
+
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                u.resource_id AS old_resource_id,
+                u.week_from,
+                u.week_to,
+                COALESCE(NULLIF(u.reason, ''), 'INDISP') AS reason,
+                r.id AS resource_id
+            FROM raw_old_unavailability u
+            JOIN resources r ON r.old_id = u.resource_id
+            """
+        ).fetchall()
+
+        for row in rows:
+            week_from = int(row["week_from"] or 0)
+            week_to = int(row["week_to"] or week_from)
+
+            if week_from <= 0:
+                continue
+
+            if week_to <= 0:
+                week_to = week_from
+
+            period_key_from = period_key_from_week(min(week_from, week_to))
+            period_key_to = period_key_from_week(max(week_from, week_to))
+
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO resource_unavailability(
+                    resource_id,
+                    period_key_from,
+                    period_key_to,
+                    reason,
+                    note
+                )
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    int(row["resource_id"]),
+                    int(period_key_from),
+                    int(period_key_to),
+                    clean_text(row["reason"] or "INDISP"),
+                    f"Importata da raw_old_unavailability old_resource_id={row['old_resource_id']}",
+                ),
+            )
+    except Exception:
+        pass
+
+
+def _resource_unavailability_rows(conn):
+    _resource_unavailability_ensure_schema(conn)
+
+    rows = conn.execute(
+        """
+        SELECT
+            u.id,
+            u.resource_id,
+            r.name AS resource_name,
+            r.role AS resource_role,
+            u.period_key_from,
+            u.period_key_to,
+            u.reason,
+            u.note,
+            u.created_at
+        FROM resource_unavailability u
+        JOIN resources r ON r.id = u.resource_id
+        ORDER BY r.name, u.period_key_from, u.period_key_to
+        """
+    ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def _resource_has_unavailability(conn, resource_id, period_key_from, period_key_to):
+    _resource_unavailability_ensure_schema(conn)
+
+    row = conn.execute(
+        """
+        SELECT id
+        FROM resource_unavailability
+        WHERE resource_id = ?
+          AND period_key_from <= ?
+          AND period_key_to >= ?
+        LIMIT 1
+        """,
+        (
+            int(resource_id),
+            int(period_key_to),
+            int(period_key_from),
+        ),
+    ).fetchone()
+
+    return row is not None
+
+
+@app.get("/api/resource-unavailability")
+def list_resource_unavailability():
+    conn = get_connection()
+    try:
+        rows = _resource_unavailability_rows(conn)
+        conn.commit()
+        return {"ok": True, "rows": rows}
+    finally:
+        conn.close()
+
+
+@app.post("/api/resource-unavailability")
+def create_resource_unavailability(payload: dict):
+    resource_id = int(payload.get("resource_id") or 0)
+    period_keys = _ow_payload_range(payload)
+    reason = clean_text(payload.get("reason") or "INDISP")
+    note = clean_text(payload.get("note") or "")
+
+    if not resource_id:
+        return {"ok": False, "error": "resource_id obbligatorio"}
+
+    if not period_keys:
+        return {"ok": False, "error": "periodo obbligatorio"}
+
+    period_key_from = min(period_keys)
+    period_key_to = max(period_keys)
+
+    conn = get_connection()
+    try:
+        _resource_unavailability_ensure_schema(conn)
+
+        resource = conn.execute(
+            "SELECT id, name FROM resources WHERE id = ?",
+            (resource_id,),
+        ).fetchone()
+
+        if not resource:
+            return {"ok": False, "error": "Risorsa non trovata"}
+
+        conflicts = conn.execute(
+            """
+            SELECT
+                a.id,
+                COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) AS period_key,
+                a.week,
+                p.name AS project_name
+            FROM allocations a
+            LEFT JOIN projects p ON p.id = a.project_id
+            WHERE a.resource_id = ?
+              AND COALESCE(NULLIF(a.period_key, 0), 2600 + a.week) BETWEEN ? AND ?
+            ORDER BY COALESCE(NULLIF(a.period_key, 0), 2600 + a.week)
+            """,
+            (resource_id, period_key_from, period_key_to),
+        ).fetchall()
+
+        if conflicts:
+            return {
+                "ok": False,
+                "error": "La risorsa ha gia allocazioni nel periodo. Svincola prima le commesse.",
+                "conflicts": [dict(row) for row in conflicts],
+            }
+
+        cur = conn.execute(
+            """
+            INSERT OR IGNORE INTO resource_unavailability(
+                resource_id,
+                period_key_from,
+                period_key_to,
+                reason,
+                note
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                resource_id,
+                period_key_from,
+                period_key_to,
+                reason or "INDISP",
+                note,
+            ),
+        )
+
+        conn.commit()
+
+        return {
+            "ok": True,
+            "id": int(cur.lastrowid or 0),
+            "rows": _resource_unavailability_rows(conn),
+        }
+    finally:
+        conn.close()
+
+
+@app.delete("/api/resource-unavailability/{unavailability_id}")
+def delete_resource_unavailability(unavailability_id: int):
+    conn = get_connection()
+    try:
+        _resource_unavailability_ensure_schema(conn)
+
+        conn.execute(
+            "DELETE FROM resource_unavailability WHERE id = ?",
+            (int(unavailability_id),),
+        )
+
+        conn.commit()
+
+        return {"ok": True, "rows": _resource_unavailability_rows(conn)}
+    finally:
+        conn.close()
+
+
+# === RESOURCE UNAVAILABILITY END ===
+
 @app.get("/api/old-workflow/gantt-state")
 def old_workflow_gantt_state():
     conn = get_connection()
@@ -3768,6 +4002,9 @@ def old_workflow_gantt_state():
         except Exception:
             demand_history = []
 
+        unavailability = _resource_unavailability_rows(conn)
+        conn.commit()
+
         return {
             "ok": True,
             "resources": [dict(row) for row in resources],
@@ -3776,6 +4013,7 @@ def old_workflow_gantt_state():
             "allocations": [dict(row) for row in allocations],
             "allocation_history": [dict(row) for row in allocation_history],
             "demand_history": [dict(row) for row in demand_history],
+            "resource_unavailability": unavailability,
         }
     finally:
         conn.close()
@@ -3820,6 +4058,15 @@ def old_workflow_gantt_assign(payload: dict):
         conflicts = []
 
         for period_key in period_keys:
+            if _resource_has_unavailability(conn, resource_id, period_key, period_key):
+                conflicts.append({
+                    "period_key": period_key,
+                    "reason": "Risorsa indisponibile",
+                    "rows": [],
+                })
+                skipped += 1
+                continue
+
             week = week_from_period_key(period_key)
 
             duplicate = conn.execute(
