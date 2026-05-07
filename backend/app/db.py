@@ -199,6 +199,23 @@ def init_db():
             """
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS workshop_rollup_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                overall_project_id INTEGER NOT NULL,
+                source_old_project_id INTEGER,
+                source_project_name TEXT NOT NULL,
+                role TEXT NOT NULL,
+                week INTEGER NOT NULL,
+                period_key INTEGER NOT NULL,
+                required REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'RAW_OLD',
+                UNIQUE(overall_project_id, source_old_project_id, source_project_name, role, period_key)
+            )
+            """
+        )
+
         ensure_column(conn, "resources", "old_id", "INTEGER DEFAULT 0")
 
         ensure_column(conn, "projects", "old_id", "INTEGER DEFAULT 0")
@@ -255,6 +272,13 @@ def init_db():
             """
             CREATE INDEX IF NOT EXISTS idx_allocations_project_role_period
             ON allocations(project_id, role, period_key)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_workshop_rollup_lookup
+            ON workshop_rollup_sources(overall_project_id, role, period_key)
             """
         )
 
