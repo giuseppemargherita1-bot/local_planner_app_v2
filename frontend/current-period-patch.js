@@ -157,6 +157,60 @@
     return 0;
   }
 
+  function getElementWeekNumber(element, index) {
+    const labelMatch = String(element?.textContent || "").trim().toUpperCase().match(/^W(\d{1,2})$/);
+    if (labelMatch) {
+      return Number(labelMatch[1]);
+    }
+
+    const periodParts = periodKeyToParts(getElementPeriodKey(element));
+    if (periodParts.week > 0) {
+      return periodParts.week;
+    }
+
+    if (!element.dataset.staticWeekSlot) {
+      element.dataset.staticWeekSlot = String(index + 1);
+    }
+
+    return Number(element.dataset.staticWeekSlot || index + 1);
+  }
+
+  function getRollingWeekOffset(weekNumber) {
+    const currentWeek = getCurrentWeek();
+    return (Number(weekNumber || 0) - currentWeek + 52) % 52;
+  }
+
+  function rotatePlannerColumns() {
+    const table = document.querySelector(".planner-matrix");
+    if (!table) return;
+
+    table.querySelectorAll("tr").forEach((row) => {
+      const cells = Array.from(row.children || []);
+      if (cells.length <= 4) return;
+
+      const stickyCount = 3;
+      const weekCells = cells.slice(stickyCount);
+      if (!weekCells.length) return;
+
+      weekCells
+        .map((cell, index) => ({
+          cell,
+          offset: getRollingWeekOffset(getElementWeekNumber(cell, index)),
+          index,
+        }))
+        .sort((left, right) => {
+          if (left.offset !== right.offset) {
+            return left.offset - right.offset;
+          }
+
+          return left.index - right.index;
+        })
+        .forEach(({ cell }) => {
+          row.appendChild(cell);
+        });
+    });
+  }
+
   function syncCurrentWeekMarkers() {
     const currentWeek = getCurrentWeek();
     const currentPeriodKey = getCurrentPeriodKey();
@@ -179,6 +233,11 @@
 
       element.classList.toggle("current-week", Number(periodKey) === currentPeriodKey);
     });
+  }
+
+  function syncPlannerWeekLayout() {
+    rotatePlannerColumns();
+    syncCurrentWeekMarkers();
   }
 
   function patchGlobalFunction(name, factory) {
@@ -352,21 +411,25 @@
 
   patchGlobalFunction("renderPlanner", (original) => function patchedRenderPlanner() {
     const result = original.apply(this, arguments);
-    requestAnimationFrame(syncCurrentWeekMarkers);
+    requestAnimationFrame(syncPlannerWeekLayout);
     return result;
   });
 
-  patchGlobalFunction("scrollToCurrentWeek", (original) => function patchedScrollToCurrentWeek() {
-    syncCurrentWeekMarkers();
-    return original.apply(this, arguments);
+  patchGlobalFunction("scrollToCurrentWeek", () => function patchedScrollToCurrentWeek() {
+    syncPlannerWeekLayout();
+
+    const plannerGridWrap = document.getElementById("plannerGridWrap");
+    if (plannerGridWrap) {
+      plannerGridWrap.scrollLeft = 0;
+    }
   });
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", syncCurrentWeekMarkers, { once: true });
+    document.addEventListener("DOMContentLoaded", syncPlannerWeekLayout, { once: true });
   } else {
-    syncCurrentWeekMarkers();
+    syncPlannerWeekLayout();
   }
 
-  setTimeout(syncCurrentWeekMarkers, 150);
-  setTimeout(syncCurrentWeekMarkers, 600);
+  setTimeout(syncPlannerWeekLayout, 150);
+  setTimeout(syncPlannerWeekLayout, 600);
 })();
