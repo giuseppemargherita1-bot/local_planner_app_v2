@@ -1,7 +1,4 @@
 (function patchCurrentPlannerPeriod() {
-  const FIRST_WEEK = 1;
-  const LAST_WEEK = 52;
-
   function getIsoWeekInfo(date = new Date()) {
     const utcDate = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
     const day = utcDate.getUTCDay() || 7;
@@ -55,6 +52,84 @@
         return null;
       }
     }
+  }
+
+  function periodKeyToParts(periodKey) {
+    const numericPeriodKey = Number(periodKey || 0);
+    if (!numericPeriodKey) {
+      return {
+        yearShort: getCurrentYearShort(),
+        week: 0,
+      };
+    }
+
+    if (numericPeriodKey >= 1000) {
+      return {
+        yearShort: Math.floor(numericPeriodKey / 100),
+        week: numericPeriodKey % 100,
+      };
+    }
+
+    return {
+      yearShort: getCurrentYearShort(),
+      week: numericPeriodKey,
+    };
+  }
+
+  function getPeriodStartDate(periodKey) {
+    const parts = periodKeyToParts(periodKey);
+    if (!parts.week) {
+      return null;
+    }
+
+    if (typeof getWeekStartDate === "function") {
+      return getWeekStartDate(2000 + parts.yearShort, parts.week);
+    }
+
+    return new Date(2000 + parts.yearShort, 0, 1 + ((parts.week - 1) * 7));
+  }
+
+  function comparePeriods(leftPeriodKey, rightPeriodKey) {
+    const leftDate = getPeriodStartDate(leftPeriodKey);
+    const rightDate = getPeriodStartDate(rightPeriodKey);
+
+    if (!leftDate || !rightDate) {
+      return Number(leftPeriodKey || 0) - Number(rightPeriodKey || 0);
+    }
+
+    return leftDate.getTime() - rightDate.getTime();
+  }
+
+  function diffWeeksFromCurrent(periodKey) {
+    const targetDate = getPeriodStartDate(periodKey);
+    const currentDate = getPeriodStartDate(getCurrentPeriodKey());
+
+    if (!targetDate || !currentDate) {
+      return 0;
+    }
+
+    return Math.round((targetDate.getTime() - currentDate.getTime()) / 604800000);
+  }
+
+  function collectDataPeriodKeys() {
+    const keys = new Set([getCurrentPeriodKey()]);
+
+    [window.demandsData, window.allocationsData, window.allocationHistoryData, window.demandHistoryData].forEach((rows) => {
+      if (!Array.isArray(rows)) return;
+
+      rows.forEach((row) => {
+        try {
+          const periodKey = Number(typeof normalizePeriodKey === "function" ? normalizePeriodKey(row) : (row?.period_key || row?.week || 0));
+          if (periodKey > 0) {
+            keys.add(periodKey);
+          }
+        } catch (error) {
+          // ignore malformed rows
+        }
+      });
+    });
+
+    return Array.from(keys).sort(comparePeriods);
   }
 
   function getElementPeriodKey(element) {
@@ -121,6 +196,10 @@
     }
   }
 
+  function findResource(resourceId) {
+    return (window.resourcesData || []).find((item) => Number(item.id) === Number(resourceId)) || null;
+  }
+
   window.__plannerCurrentPeriod = getIsoWeekInfo();
 
   patchGlobalFunction("periodKeyFromWeek", () => function patchedPeriodKeyFromWeek(week, yearShort) {
@@ -163,16 +242,10 @@
       return false;
     }
 
-    const numericPeriodKey = Number(periodKey || 0);
-    const selectedWeek = typeof weekFromPeriodKey === "function"
-      ? weekFromPeriodKey(numericPeriodKey)
-      : (numericPeriodKey % 100);
-    const selectedYearShort = numericPeriodKey >= 1000
-      ? Math.floor(numericPeriodKey / 100)
-      : getCurrentYearShort();
-    const selectedDate = typeof getWeekStartDate === "function"
-      ? getWeekStartDate(2000 + selectedYearShort, selectedWeek)
-      : new Date(2000 + selectedYearShort, 0, 1);
+    const selectedDate = getPeriodStartDate(periodKey);
+    if (!selectedDate) {
+      return false;
+    }
 
     return endDate < selectedDate;
   });
@@ -188,28 +261,23 @@
     if (!project) return false;
     if (typeof isWorkshopChildProject === "function" && isWorkshopChildProject(project)) return false;
 
-    const lastUseful = typeof getProjectLastUsefulPeriod === "function"
-      ? getProjectLastUsefulPeriod(projectId)
-      : 0;
-
-    return lastUseful >= getCurrentPeriodKey() - 4;
+    const lastUseful = typeof getProjectLastUsefulPeriod === "function" ? getProjectLastUsefulPeriod(projectId) : 0;
+    return diffWeeksFromCurrent(lastUseful) >= -4;
   });
 
   patchGlobalFunction("rowHasUsefulFutureActivity", () => function patchedRowHasUsefulFutureActivity(projectId, role) {
     const normalizedRole = normalizeText(role);
-    const periods = Array.isArray(PERIODS) ? PERIODS : [];
-    const currentPeriodKey = getCurrentPeriodKey();
 
-    return periods.some((period) => {
-      if (Number(period.periodKey) < currentPeriodKey) {
+    return collectDataPeriodKeys().some((periodKey) => {
+      if (diffWeeksFromCurrent(periodKey) < 0) {
         return false;
       }
 
-      const demandFound = (demandsData || []).some((demand) => {
+      const demandFound = (window.demandsData || []).some((demand) => {
         return (
           Number(demand.project_id) === Number(projectId) &&
           normalizeText(demand.role || "") === normalizedRole &&
-          normalizePeriodKey(demand) === Number(period.periodKey) &&
+          Number(normalizePeriodKey(demand)) === Number(periodKey) &&
           Number(demand.quantity || 0) > 0
         );
       });
@@ -218,41 +286,41 @@
         return true;
       }
 
-      return (allocationsData || []).some((allocation) => {
+      return (window.allocationsData || []).some((allocation) => {
         if (
           Number(allocation.project_id) !== Number(projectId) ||
           normalizeText(allocation.role || "") !== normalizedRole ||
-          normalizePeriodKey(allocation) !== Number(period.periodKey)
+          Number(normalizePeriodKey(allocation)) !== Number(periodKey)
         ) {
           return false;
         }
 
-        const resource = (resourcesData || []).find((item) => Number(item.id) === Number(allocation.resource_id));
+        const resource = findResource(allocation.resource_id);
         if (!resource) {
           return false;
         }
 
-        return isResourceAvailableForPeriod(resource, period.periodKey);
+        return typeof isResourceAvailableForPeriod === "function"
+          ? isResourceAvailableForPeriod(resource, periodKey)
+          : true;
       });
     });
   });
 
   patchGlobalFunction("rowHasRecentPastActivity", () => function patchedRowHasRecentPastActivity(projectId, role) {
     const normalizedRole = normalizeText(role);
-    const currentPeriodKey = getCurrentPeriodKey();
-    const recentPastStart = currentPeriodKey - 2;
-    const periods = Array.isArray(PERIODS) ? PERIODS : [];
 
-    return periods.some((period) => {
-      if (Number(period.periodKey) < recentPastStart || Number(period.periodKey) >= currentPeriodKey) {
+    return collectDataPeriodKeys().some((periodKey) => {
+      const distance = diffWeeksFromCurrent(periodKey);
+      if (distance < -2 || distance >= 0) {
         return false;
       }
 
-      const demandFound = (demandsData || []).some((demand) => {
+      const demandFound = (window.demandsData || []).some((demand) => {
         return (
           Number(demand.project_id) === Number(projectId) &&
           normalizeText(demand.role || "") === normalizedRole &&
-          normalizePeriodKey(demand) === Number(period.periodKey) &&
+          Number(normalizePeriodKey(demand)) === Number(periodKey) &&
           Number(demand.quantity || 0) > 0
         );
       });
@@ -261,21 +329,23 @@
         return true;
       }
 
-      return (allocationsData || []).some((allocation) => {
+      return (window.allocationsData || []).some((allocation) => {
         if (
           Number(allocation.project_id) !== Number(projectId) ||
           normalizeText(allocation.role || "") !== normalizedRole ||
-          normalizePeriodKey(allocation) !== Number(period.periodKey)
+          Number(normalizePeriodKey(allocation)) !== Number(periodKey)
         ) {
           return false;
         }
 
-        const resource = (resourcesData || []).find((item) => Number(item.id) === Number(allocation.resource_id));
+        const resource = findResource(allocation.resource_id);
         if (!resource) {
           return false;
         }
 
-        return isResourceAvailableForPeriod(resource, period.periodKey);
+        return typeof isResourceAvailableForPeriod === "function"
+          ? isResourceAvailableForPeriod(resource, periodKey)
+          : true;
       });
     });
   });
