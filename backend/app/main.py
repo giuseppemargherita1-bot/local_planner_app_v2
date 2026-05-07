@@ -124,7 +124,6 @@ def planner_matrix_old_logic(
 
 
 @app.get("/api/workshop-breakdown")
-@app.get("/api/workshop-breakdown")
 def workshop_breakdown(
     project_id: int | None = None,
     role: str | None = None,
@@ -875,127 +874,7 @@ def create_project(payload: ProjectCreate):
                 clean_text(payload.end_date),
                 clean_text(payload.status),
                 clean_text(payload.note),
-            )
-        )
-        conn.commit()
-
-        row = conn.execute(
-            """
-            SELECT id, name, client, start_date, end_date, status, note
-            FROM projects
-            WHERE id = ?
-            """,
-            (cursor.lastrowid,)
-        ).fetchone()
-
-        return dict(row)
-    finally:
-        conn.close()
-
-
-@app.get("/api/demands")
-def list_demands():
-    conn = get_connection()
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                d.id,
-                d.project_id,
-                p.name AS project_name,
-                d.week,
-                COALESCE(NULLIF(d.period_key, 0), 2600 + d.week) AS period_key,
-                d.role,
-                d.quantity,
-                d.note
-            FROM demands d
-            JOIN projects p ON p.id = d.project_id
-            ORDER BY p.name ASC, d.role ASC, period_key ASC, d.week ASC
-            """
-        ).fetchall()
-
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["period_key"] = int(item.get("period_key") or period_key_from_week(item.get("week")))
-            item["week"] = int(item.get("week") or week_from_period_key(item["period_key"]))
-            result.append(item)
-
-        return result
-    finally:
-        conn.close()
-
-
-@app.post("/api/demands")
-def create_demand(payload: DemandCreate):
-    conn = get_connection()
-    try:
-        role = normalize_role(payload.role)
-        period_key = period_key_from_week(payload.week)
-        week = week_from_period_key(period_key)
-
-        existing = conn.execute(
-            """
-            SELECT id, quantity
-            FROM demands
-            WHERE project_id = ?
-              AND COALESCE(NULLIF(period_key, 0), 2600 + week) = ?
-              AND UPPER(role) = ?
-            """,
-            (payload.project_id, period_key, role),
-        ).fetchone()
-
-        if existing:
-            old_quantity = float(existing["quantity"] or 0)
-            new_quantity = float(payload.quantity or 0)
-
-            conn.execute(
-                """
-                UPDATE demands
-                SET quantity = ?, note = ?, role = ?, week = ?, period_key = ?
-                WHERE id = ?
-                """,
-                (
-                    new_quantity,
-                    clean_text(payload.note),
-                    role,
-                    week,
-                    period_key,
-                    existing["id"],
-                ),
-            )
-
-            if old_quantity != new_quantity:
-                conn.execute(
-                    """
-                    INSERT INTO demand_history
-                    (project_id, week, period_key, role, old_quantity, new_quantity, note)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        payload.project_id,
-                        week,
-                        period_key,
-                        role,
-                        old_quantity,
-                        new_quantity,
-                        "Modifica fabbisogno",
-                    ),
-                )
-
-            demand_id = existing["id"]
-        else:
-            cursor = conn.execute(
-                """
-                INSERT INTO demands (project_id, week, period_key, role, quantity, note)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    payload.project_id,
-                    week,
-                    period_key,
-                    role,
-                    payload.quantity,
+ …7 tokens truncated…ty,
                     clean_text(payload.note),
                 )
             )
